@@ -68,11 +68,17 @@ class SerialSession(object):
             chunk = self.ser.read(4096)
             if chunk:
                 buf += chunk.decode("utf-8", "replace")
-                # пейджер "--More--"
-                if "More" in buf[-40:]:
-                    self.ser.write(b" ")
+                tail = buf[-200:]
+                # Постраничный вывод (пейджер). У D-Link это строка вида
+                # "SPACE Next Page  ENTER Next Entry  a All  q Quit", у других —
+                # классический "--More--". Отвечаем 'a' (All) — вывалить всё разом,
+                # чтобы длинные show-команды не ломали сессию.
+                if ("Next Page" in tail or "Next Entry" in tail
+                        or "--More--" in tail or "More: <space>" in tail
+                        or "Quit" in tail):
+                    self.ser.write(b"a")
+                    time.sleep(0.05)
                     continue
-                tail = buf[-120:]
                 for pat in patterns:
                     if pat in tail:
                         return buf
