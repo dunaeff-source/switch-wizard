@@ -1,0 +1,300 @@
+# ============================================================================
+#  ПРОФИЛИ КОММУТАТОРОВ
+#  Это единственный файл, который нужно править при добавлении новой модели.
+#  Программу пересобирать НЕ нужно — profiles.yaml лежит рядом с .exe.
+#
+#  Плейсхолдеры: {{hostname}} {{mgmt_ip}} {{mgmt_mask}} {{mgmt_prefix}}
+#                {{gateway}} {{mgmt_vlan}} {{username}} {{password}}
+#                {{snmp_ro}} {{vlan_id}} {{vlan_name}} {{port}} {{iface}}
+#                {{port_range}} {{vlan}} {{vlans_csv}}
+#
+#  Команда может быть строкой или объектом:
+#     - "hostname {{hostname}}"
+#     - cmd: "create account admin {{username}}"
+#       replies: ["{{password}}", "{{password}}"]   # ответы на доп. запросы
+# ============================================================================
+
+# ============================================================================
+#  КОРПОРАТИВНЫЕ ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ
+#  Подставляются в поля мастера при запуске. Единый стандарт для всех
+#  коммутаторов организации. Меняются здесь, программу пересобирать не нужно.
+# ============================================================================
+defaults:
+  # Учётная запись, которая СОЗДАЁТСЯ на коммутаторе
+  username: "root"
+  password: "aaebkgb"
+  snmp_ro: "troitsk77"
+  # Учётные данные для ВХОДА в консоль нового коммутатора (заводские).
+  # На DGS-1250 из коробки это admin / admin.
+  login_username: "admin"
+  login_password: "admin"
+  snmp_mandatory: true      # SNMP настраивается всегда, галочку снять нельзя
+  lock_credentials: false   # true — запретить оператору править логин/пароль/community
+
+dlink_dgs1250:
+  title: "D-Link DGS-1250-28X/A1A (industrial-like CLI)"
+  baudrate: 115200
+  prompts: ["#", ">"]
+  enable: ["enable"]
+  port_prefix: "1/0/"
+  error_patterns:
+    - "Next possible completions"
+    - "Available commands"
+    - "Invalid input"
+    - "Unrecognized command"
+    - "Ambiguous command"
+  auto_answers:
+    - match: "\\[y/n\\]"
+      send: "y"
+    - match: "\\[yes/no\\]"
+      send: "yes"
+    - match: "Destination filename"
+      send: "y"
+  sections:
+    enter_config: ["configure terminal"]
+    hostname: ["snmp-server name {{hostname}}"]
+    vlans:
+      foreach: vlans
+      commands:
+        - "vlan {{vlan_id}}"
+        - "name {{vlan_name}}"
+        - "exit"
+    mgmt:
+      - "interface vlan {{mgmt_vlan}}"
+      - "ip address {{mgmt_ip}} {{mgmt_mask}}"
+      - "exit"
+      - "ip route 0.0.0.0 0.0.0.0 {{gateway}}"
+    user:
+      - "username {{username}} password {{password}}"
+      - "username {{username}} privilege 15"
+      # Удаление заводской учётки admin — включать ТОЛЬКО после того, как
+      # убедились, что вход под новой учёткой работает:
+      # - "no username admin"
+    ssh:
+      # генерация ключа выполняется в привилегированном режиме и занимает время
+      - cmd: "end"
+      - cmd: "crypto key generate rsa modulus 1024"
+        timeout: 120
+      - cmd: "configure terminal"
+      - cmd: "ip ssh server"
+      - cmd: "line ssh"
+      - cmd: "login local"
+      - cmd: "exit"
+    snmp:
+      - "snmp-server community {{snmp_ro}} ro"
+      # Удаление заводских community (если их нет, коммутатор вернёт ошибку):
+      # - "no snmp-server community public"
+      # - "no snmp-server community private"
+    ports_access:
+      foreach: port_groups_access
+      commands:
+        - "interface range ethernet {{iface_range}}"
+        - "switchport mode access"
+        - "switchport access vlan {{vlan}}"
+        - "exit"
+    ports_trunk:
+      foreach: port_groups_trunk
+      commands:
+        - "interface range ethernet {{iface_range}}"
+        - "switchport mode trunk"
+        - "switchport trunk allowed vlan {{vlans_csv}}"
+        - "exit"
+    save:
+      - "end"
+      - cmd: "copy running-config startup-config"
+        timeout: 90
+
+eltex_mes:
+  title: "Eltex MES (MES2300/3300/2400)"
+  baudrate: 115200
+  prompts: ["#", ">"]
+  enable: ["enable"]
+  iface_template: "gigabitethernet1/0/{{port}}"
+  error_patterns: ["Invalid input", "Unrecognized command", "% Incomplete"]
+  auto_answers:
+    - match: "\\(y/n\\)"
+      send: "y"
+    - match: "\\[y/n\\]"
+      send: "y"
+    - match: "Overwrite file"
+      send: "y"
+  sections:
+    enter_config: ["configure terminal"]
+    hostname: ["hostname {{hostname}}"]
+    vlans:
+      foreach: vlans
+      commands:
+        - "vlan {{vlan_id}}"
+        - "name {{vlan_name}}"
+        - "exit"
+    mgmt:
+      - "interface vlan {{mgmt_vlan}}"
+      - "ip address {{mgmt_ip}} {{mgmt_mask}}"
+      - "exit"
+      - "ip default-gateway {{gateway}}"
+    user:
+      - "username {{username}} password {{password}} privilege 15"
+    ssh:
+      - "crypto key generate rsa"
+      - "ip ssh server"
+    snmp:
+      - "snmp-server server"
+      - "snmp-server community {{snmp_ro}} ro"
+    ports_access:
+      foreach: ports_each_access
+      commands:
+        - "interface {{iface}}"
+        - "switchport mode access"
+        - "switchport access vlan {{vlan}}"
+        - "exit"
+    ports_trunk:
+      foreach: ports_each_trunk
+      commands:
+        - "interface {{iface}}"
+        - "switchport mode trunk"
+        - "switchport trunk allowed vlan add {{vlans_csv}}"
+        - "exit"
+    save:
+      - "end"
+      - "write memory"
+
+tplink_t:
+  title: "TP-Link T1500/T1600/T2600"
+  baudrate: 38400
+  prompts: ["#", ">"]
+  enable: ["enable"]
+  iface_template: "gigabitEthernet 1/0/{{port}}"
+  error_patterns: ["Invalid input", "Unknown command", "Ambiguous"]
+  auto_answers:
+    - match: "\\(Y/N\\)"
+      send: "Y"
+  sections:
+    enter_config: ["configure"]
+    hostname: ["hostname {{hostname}}"]
+    vlans:
+      foreach: vlans
+      commands:
+        - "vlan {{vlan_id}}"
+        - "name {{vlan_name}}"
+        - "exit"
+    mgmt:
+      - "interface vlan {{mgmt_vlan}}"
+      - "ip address {{mgmt_ip}} {{mgmt_mask}}"
+      - "exit"
+      - "ip route 0.0.0.0 0.0.0.0 {{gateway}}"
+    user:
+      - "user name {{username}} privilege admin password {{password}}"
+    ssh:
+      - "ip ssh server enable"
+    snmp:
+      - "snmp-server"
+      - "snmp-server community {{snmp_ro}} read-only"
+    ports_access:
+      foreach: ports_each_access
+      commands:
+        - "interface {{iface}}"
+        - "switchport general allowed vlan {{vlan}} untagged"
+        - "switchport pvid {{vlan}}"
+        - "exit"
+    ports_trunk:
+      foreach: ports_each_trunk
+      commands:
+        - "interface {{iface}}"
+        - "switchport general allowed vlan {{vlans_csv}} tagged"
+        - "exit"
+    save:
+      - "end"
+      - "copy running-config startup-config"
+
+zyxel_gs:
+  title: "Zyxel GS1900 / GS2210 / XGS"
+  baudrate: 115200
+  prompts: ["#", ">"]
+  enable: ["enable"]
+  iface_template: "gigabitethernet 1/0/{{port}}"
+  error_patterns: ["Invalid input", "Incomplete command", "Error"]
+  auto_answers:
+    - match: "\\(y/n\\)"
+      send: "y"
+  sections:
+    enter_config: ["configure"]
+    hostname: ["hostname {{hostname}}"]
+    vlans:
+      foreach: vlans
+      commands:
+        - "vlan {{vlan_id}}"
+        - "name {{vlan_name}}"
+        - "exit"
+    mgmt:
+      - "interface vlan {{mgmt_vlan}}"
+      - "ip address {{mgmt_ip}} {{mgmt_mask}}"
+      - "exit"
+      - "ip route 0.0.0.0 0.0.0.0 {{gateway}}"
+    user:
+      - "username {{username}} password {{password}} privilege 14"
+    ssh:
+      - "ip ssh server"
+    snmp:
+      - "snmp-server community {{snmp_ro}} read-only"
+    ports_access:
+      foreach: ports_each_access
+      commands:
+        - "interface {{iface}}"
+        - "switchport mode access"
+        - "switchport access vlan {{vlan}}"
+        - "exit"
+    ports_trunk:
+      foreach: ports_each_trunk
+      commands:
+        - "interface {{iface}}"
+        - "switchport mode trunk"
+        - "switchport trunk allowed vlan {{vlans_csv}}"
+        - "exit"
+    save:
+      - "exit"
+      - "write memory"
+
+dlink_legacy:
+  title: "D-Link DES-3xxx / DGS-3xxx (СТАРЫЙ CLI, не для DGS-1250!)"
+  baudrate: 115200
+  prompts: ["#", ">", ":admin#"]
+  enable: []
+  error_patterns: ["Next possible completions", "Available commands", "Invalid"]
+  auto_answers:
+    - match: "\\(y/n\\)"
+      send: "y"
+    - match: "All changes will be lost"
+      send: "y"
+  sections:
+    enter_config: []
+    hostname: ["config snmp system_name {{hostname}}"]
+    vlans:
+      foreach: vlans
+      commands:
+        - "create vlan {{vlan_name}} tag {{vlan_id}}"
+    mgmt:
+      - "config ipif System vlan {{mgmt_vlan_name}} ipaddress {{mgmt_ip}}/{{mgmt_prefix}}"
+      - "create iproute default {{gateway}}"
+    user:
+      - cmd: "create account admin {{username}}"
+        replies: ["{{password}}", "{{password}}"]
+    ssh:
+      - "enable ssh"
+    snmp:
+      - "enable snmp"
+      - "create snmp community {{snmp_ro}} view CommunityView read_only"
+      # Удаление заводских community — раскомментировать после проверки на
+      # тестовом коммутаторе (если записи нет, устройство вернёт ошибку):
+      # - "delete snmp community public"
+      # - "delete snmp community private"
+    ports_access:
+      foreach: port_groups_access
+      commands:
+        - "config vlan vlanid {{vlan}} add untagged {{port_range}}"
+        - "config port_vlan {{port_range}} pvid {{vlan}}"
+    ports_trunk:
+      foreach: port_groups_trunk
+      commands:
+        - "config vlan vlanid {{vlans_csv}} add tagged {{port_range}}"
+    save:
+      - "save"
