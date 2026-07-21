@@ -135,6 +135,98 @@ def parse_ports(text):
     return groups
 
 
+def parse_vlan_table(text):
+    """Единый формат ввода: одна строка = «Имя  Номер  Порты  tag|untag».
+    Пример корпоративного стандарта:  MNGNMT_10 10 25-28 tag
+
+    Возвращает (vlans, port_groups):
+      vlans       — [{'vlan_id': int, 'vlan_name': str}, ...] в порядке появления
+      port_groups — [{'mode': 'access'|'trunk', 'port_range': str,
+                      'port_list': [int], 'vlan': str, 'vlans_csv': str}, ...]
+
+    Порты, не указанные ни в одной строке, НЕ трогаются и остаются в дефолтном
+    VLAN 1 (абоненты). tag  -> порт(ы) trunk, VLAN тегированный;
+                       untag -> порт(ы) access, VLAN нетегированный.
+    Несколько строк tag на один и тот же диапазон портов объединяются в один
+    trunk с перечнем VLAN через запятую.
+    """
+    vlan_names = {}          # 'id' -> name
+    vlan_order = []          # ['10', '20', ...]
+    access_groups = []
+    trunk_ranges = {}        # port_range -> {'port_list': [...], 'vlans': ['10', ...]}
+    trunk_order = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            raise ValueError(
+                "Строка VLAN должна быть вида «Имя Номер Порты tag|untag», "
+                "например «MNGNMT_10 10 25-28 tag»: %r" % raw)
+        name, vid, port_range, mode = parts[0], parts[1], parts[2], parts[3].lower()
+
+        if not vid.isdigit() or not (1 <= int(vid) <= 4094):
+            raise ValueError("Некорректный номер VLAN (1-4094): %r" % raw)
+        name = re.sub(r"\s+", "_", name)
+
+        if mode in ("tag", "tagged", "trunk"):
+            tagged = True
+        elif mode in ("untag", "untagged", "access"):
+            tagged = False
+        else:
+            raise ValueError("Последнее слово должно быть tag или untag: %r" % raw)
+
+        try:
+            port_list = expand_ports(port_range)
+        except ValueError:
+            raise ValueError("Не удалось разобрать номера портов: %r" % raw)
+        if not port_list:
+            raise ValueError("Не указаны порты: %r" % raw)
+
+        if vid not in vlan_names:
+            vlan_names[vid] = name
+            vlan_order.append(vid)
+
+        if tagged:
+            grp = trunk_ranges.get(port_range)
+            if grp is None:
+                grp = {"port_list": port_list, "vlans": []}
+                trunk_ranges[port_range] = grp
+                trunk_order.append(port_range)
+            if vid not in grp["vlans"]:
+                grp["vlans"].append(vid)
+        else:
+            access_groups.append({
+                "mode": "access", "port_range": port_range,
+                "port_list": port_list, "vlan": vid, "vlans_csv": vid,
+            })
+
+    vlans = [{"vlan_id": int(v), "vlan_name": vlan_names[v]} for v in vlan_order]
+
+    trunk_groups = []
+    for r in trunk_order:
+        g = trunk_ranges[r]
+        trunk_groups.append({
+            "mode": "trunk", "port_range": r, "port_list": g["port_list"],
+            "vlan": g["vlans"][0], "vlans_csv": ",".join(g["vlans"]),
+        })
+
+    return vlans, access_groups + trunk_groups
+
+
+def derive_gateway(ip):
+    """Корпоративный стандарт: шлюз всегда X.Y.Z.254 в той же /24, что и IP.
+    '10.79.253.232' -> '10.79.253.254'. Пустая строка -> '' (без вычисления)."""
+    ip = (ip or "").strip()
+    try:
+        octets = str(ipaddress.IPv4Address(ip)).split(".")
+    except Exception:
+        return ""
+    return ".".join(octets[:3] + ["254"])
+
+
 def mask_to_prefix(mask):
     return ipaddress.IPv4Network("0.0.0.0/%s" % mask).prefixlen
 
@@ -156,15 +248,26 @@ def prepare_vars(form):
             return False
 
     ip_ok(form["mgmt_ip"], "IP управления")
-    ip_ok(form["gateway"], "шлюз")
+
+    # Корпоративный стандарт: шлюз всегда 10.79.X.254 в той же /24, что и IP.
+    # Если поле шлюза пустое — вычисляем автоматически из IP.
+    gateway = (form.get("gateway") or "").strip()
+    if not gateway:
+        gateway = derive_gateway(form["mgmt_ip"])
+    form = dict(form, gateway=gateway)
+    ip_ok(gateway, "шлюз")
+
     try:
         prefix = mask_to_prefix(form["mgmt_mask"])
     except Exception:
         errors.append("Некорректная маска: %s" % form["mgmt_mask"])
         prefix = 24
 
-    vlans = parse_vlans(form.get("vlans_text", ""))
-    ports = parse_ports(form.get("ports_text", ""))
+    try:
+        vlans, ports = parse_vlan_table(form.get("vlan_table_text", ""))
+    except ValueError as exc:
+        errors.append(str(exc))
+        vlans, ports = [], []
 
     mgmt_vlan = str(form.get("mgmt_vlan") or "1")
     mgmt_vlan_name = "default"
@@ -172,12 +275,13 @@ def prepare_vars(form):
         if str(v["vlan_id"]) == mgmt_vlan:
             mgmt_vlan_name = v["vlan_name"]
 
-    # Проверка: все VLAN, используемые на портах, объявлены
-    declared = {str(v["vlan_id"]) for v in vlans} | {"1"}
-    for g in ports:
-        for v in g["vlans_csv"].split(","):
-            if v not in declared:
-                errors.append("VLAN %s используется на портах, но не создан в списке VLAN" % v)
+    # VLAN управления (кроме дефолтного 1) должен быть описан в таблице VLAN,
+    # иначе команде interface vlan N не на чем работать.
+    if mgmt_vlan != "1" and mgmt_vlan not in {str(v["vlan_id"]) for v in vlans}:
+        errors.append(
+            "VLAN управления %s не описан в таблице VLAN — добавьте строку "
+            "с этим номером (например «MNGNMT_%s %s 25-28 tag»)."
+            % (mgmt_vlan, mgmt_vlan, mgmt_vlan))
 
     if not form.get("password"):
         errors.append("Не задан пароль администратора")

@@ -78,11 +78,15 @@ class App(tk.Tk):
         params.pack(fill="x", pady=(10, 0))
 
         self.e_hostname = self._field(params, "Имя устройства:", 0, 0, "SW-OFFICE-01")
-        self.e_ip = self._field(params, "IP управления:", 0, 2, "192.168.1.10")
+        self.e_ip = self._field(params, "IP управления:", 0, 2, "10.79.")
         self.e_mask = self._field(params, "Маска:", 0, 4, "255.255.255.0")
-        self.e_gw = self._field(params, "Шлюз:", 1, 0, "192.168.1.1")
-        self.e_mgmt_vlan = self._field(params, "VLAN управления:", 1, 2, "1", width=8)
+        self.e_gw = self._field(params, "Шлюз (авто):", 1, 0, "")
+        self.e_mgmt_vlan = self._field(params, "VLAN управления:", 1, 2, "10", width=8)
         self.e_user = self._field(params, "Новый логин:", 1, 4, self.defaults["username"])
+
+        # Шлюз по корпоративному стандарту всегда 10.79.X.254 — вычисляем из IP.
+        self.e_ip.bind("<KeyRelease>", self._autofill_gateway)
+        self.e_ip.bind("<FocusOut>", self._autofill_gateway)
         self.e_pass = self._field(params, "Новый пароль:", 2, 0,
                                   self.defaults["password"], show="*")
         self.e_snmp = self._field(params, "SNMP community:", 2, 2, self.defaults["snmp_ro"])
@@ -106,22 +110,20 @@ class App(tk.Tk):
             for entry in (self.e_user, self.e_pass, self.e_snmp):
                 entry.state(["readonly"])
 
-        # --- VLAN и порты
+        # --- VLAN: «Имя  Номер  Порты  tag|untag», по одной строке
         tables = ttk.Frame(root)
         tables.pack(fill="both", expand=False, pady=(10, 0))
 
-        vlan_box = ttk.LabelFrame(tables, text="3. VLAN — «номер имя», по одному в строке", padding=8)
-        vlan_box.pack(side="left", fill="both", expand=True)
-        self.txt_vlans = tk.Text(vlan_box, height=7, width=32)
+        vlan_box = ttk.LabelFrame(
+            tables,
+            text="3. VLAN — «Имя  Номер  Порты  tag|untag», по одной строке. "
+                 "Порты, не указанные здесь, остаются в дефолтном VLAN 1 (абоненты).",
+            padding=8)
+        vlan_box.pack(fill="both", expand=True)
+        self.txt_vlans = tk.Text(vlan_box, height=6)
         self.txt_vlans.pack(fill="both", expand=True)
-        self.txt_vlans.insert("1.0", "10 Office\n20 VoIP\n30 Guest")
-
-        port_box = ttk.LabelFrame(
-            tables, text="4. Порты — «диапазон режим VLAN»", padding=8)
-        port_box.pack(side="left", fill="both", expand=True, padx=(10, 0))
-        self.txt_ports = tk.Text(port_box, height=7, width=42)
-        self.txt_ports.pack(fill="both", expand=True)
-        self.txt_ports.insert("1.0", "1-20 access 10\n21-22 access 20\n23-24 trunk 10,20,30")
+        # Корпоративный стандарт: управляющий VLAN 10 тегированный на аплинках 25-28.
+        self.txt_vlans.insert("1.0", "MNGNMT_10 10 25-28 tag")
 
         # --- Кнопки
         btns = ttk.Frame(root)
@@ -156,6 +158,14 @@ class App(tk.Tk):
         return entry
 
     # ------------------------------------------------------------------ действия
+    def _autofill_gateway(self, _event=None):
+        """Корпоративный стандарт: шлюз = первые три октета IP + .254."""
+        parts = self.e_ip.get().strip().split(".")
+        if len(parts) == 4 and all(p.isdigit() for p in parts):
+            gw = ".".join(parts[:3] + ["254"])
+            self.e_gw.delete(0, "end")
+            self.e_gw.insert(0, gw)
+
     def _model_changed(self, _event=None):
         prof = self._profile()
         self.cmb_baud.set(str(prof.get("baudrate", 115200)))
@@ -210,8 +220,7 @@ class App(tk.Tk):
             "enable_ssh": self.var_ssh.get(),
             "enable_snmp": self.var_snmp.get(),
             "enable_user": self.var_user.get(),
-            "vlans_text": self.txt_vlans.get("1.0", "end"),
-            "ports_text": self.txt_ports.get("1.0", "end"),
+            "vlan_table_text": self.txt_vlans.get("1.0", "end"),
         }
         variables = cb.prepare_vars(form)
         plan = cb.build_commands(self._profile(), variables)

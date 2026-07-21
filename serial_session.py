@@ -53,7 +53,11 @@ class SerialSession(object):
             self.log("Порт закрыт.")
 
     def _write(self, text):
-        self.ser.write((text + "\r\n").encode("ascii", "ignore"))
+        # ВАЖНО: отправляем ТОЛЬКО "\r" (CR), без "\n". Консоли D-Link (и многих
+        # других вендоров) трактуют "\r" и "\n" как ДВА отдельных нажатия Enter.
+        # Из-за лишнего "\n" на запрос пароля уходил пустой ввод и логин срывался,
+        # хотя вручную в PuTTY (где шлётся только "\r") тот же admin/admin проходил.
+        self.ser.write((text + "\r").encode("ascii", "ignore"))
         self.ser.flush()
 
     def _read_until(self, patterns, timeout=8.0):
