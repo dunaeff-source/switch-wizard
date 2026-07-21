@@ -146,11 +146,34 @@ class SerialSession(object):
                                   % (shown, out.strip()[-300:]))
         return out
 
-    def run_plan(self, plan, username, password, on_progress=None):
-        """Выполняет весь список команд. Возвращает полный лог сессии."""
+    def capture(self, cmd, timeout=20):
+        """Отправляет show-команду и возвращает ответ коммутатора.
+        Ошибки не выбрасывает (для команд чтения)."""
+        self.log("> %s" % cmd)
+        self._write(cmd)
+        return self._read_until(self.prompts, timeout=timeout)
+
+    def run_plan(self, plan, username, password, on_progress=None,
+                 backup_cmd=None, verify_cmd=None, facts_cmd=None):
+        """Выполняет план. Опционально: бэкап конфига до, проверка и чтение
+        фактов (версия/MAC) вокруг настройки. Возвращает dict с их выводом."""
+        result = {"backup": "", "verify": "", "facts": ""}
         self.open()
         try:
             self.wake_up(username, password)
+
+            if facts_cmd:
+                try:
+                    result["facts"] = self.capture(facts_cmd, timeout=20)
+                except Exception as exc:
+                    self.log("Не удалось прочитать факты: %s" % exc)
+            if backup_cmd:
+                self.log("Сохраняю текущий конфиг в бэкап...")
+                try:
+                    result["backup"] = self.capture(backup_cmd, timeout=40)
+                except Exception as exc:
+                    self.log("Не удалось сделать бэкап: %s" % exc)
+
             total = len(plan)
             for idx, step in enumerate(plan, 1):
                 self.send(step["cmd"], step.get("replies"), secret=password,
@@ -159,5 +182,46 @@ class SerialSession(object):
                     on_progress(idx, total)
             self.log("")
             self.log("=== Настройка завершена, конфигурация сохранена ===")
+
+            if verify_cmd:
+                self.log("Проверяю применённые настройки...")
+                try:
+                    result["verify"] = self.capture(verify_cmd, timeout=20)
+                except Exception as exc:
+                    self.log("Не удалось выполнить проверку: %s" % exc)
+        finally:
+            self.close()
+        return result
+
+    def read_config(self, username, password, cmd):
+        """Логинится и возвращает вывод show-команды (для чтения/бэкапа конфига)."""
+        self.open()
+        try:
+            self.wake_up(username, password)
+            return self.capture(cmd, timeout=40)
+        finally:
+            self.close()
+
+    def reset_factory(self, username, password, reset_cmds):
+        """Отправляет команды сброса к заводским, авто-подтверждает и сообщает
+        о перезагрузке (после сброса приглашение уже не ждём)."""
+        self.open()
+        try:
+            self.wake_up(username, password)
+            for cmd in (reset_cmds or []):
+                self.log("> %s" % cmd)
+                self._write(cmd)
+                out = self._read_until(
+                    self.prompts + ["y/n", "yes/no", "confirm", "proceed", "sure"],
+                    timeout=15)
+                if re.search(r"y/n|yes/no|confirm|proceed|sure", out[-200:], re.IGNORECASE):
+                    self._write("y")
+                    try:
+                        self._read_until(self.prompts, timeout=10)
+                    except Exception:
+                        pass
+            self.log("")
+            self.log("=== Команда сброса отправлена. Коммутатор перезагружается — "
+                     "через ~минуту вернётся к заводским (IP 10.90.90.90, admin/admin). ===")
         finally:
             self.close()

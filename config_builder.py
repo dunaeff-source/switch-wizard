@@ -4,6 +4,8 @@
 import os
 import re
 import sys
+import string
+import secrets
 import ipaddress
 
 import yaml
@@ -19,10 +21,30 @@ SECTION_ORDER = [
     "user",
     "ssh",
     "snmp",
+    "web",              # включение веб-интерфейса (HTTP/HTTPS)
     "ports_access",
     "ports_trunk",
+    "segmentation",     # traffic segmentation — изоляция абонентов
+    "loopback",         # защита от петель (LBD)
+    "storm_control",    # ограничение штормов на абонентских портах
     "save",
 ]
+
+
+def gen_password(length=12):
+    """Стойкий пароль без символов, ломающих CLI (только буквы и цифры),
+    гарантированно с заглавной, строчной и цифрой."""
+    alphabet = string.ascii_letters + string.digits
+    while True:
+        pw = "".join(secrets.choice(alphabet) for _ in range(length))
+        if (any(c.islower() for c in pw) and any(c.isupper() for c in pw)
+                and any(c.isdigit() for c in pw)):
+            return pw
+
+
+def normalize(items):
+    """Список команд (строк или объектов) -> [{'cmd','replies','timeout'}, ...]."""
+    return [_norm(c) for c in (items or [])]
 
 
 def base_dir():
@@ -288,6 +310,15 @@ def prepare_vars(form):
     if form.get("enable_snmp", True) and not (form.get("snmp_ro") or "").strip():
         errors.append("Не заполнено имя SNMP community")
 
+    # Аплинк-порты: пусто -> авто (берутся из tag/trunk-портов в build_commands).
+    uplink_ports = None
+    uraw = (form.get("uplink_ports") or "").strip()
+    if uraw:
+        try:
+            uplink_ports = expand_ports(uraw)
+        except ValueError:
+            errors.append("Не удалось разобрать аплинк-порты: %r" % uraw)
+
     if errors:
         raise ValueError("\n".join(sorted(set(errors))))
 
@@ -306,11 +337,16 @@ def prepare_vars(form):
         "snmp_ro": form.get("snmp_ro") or "public",
         "_vlans": vlans,
         "_ports": ports,
+        "_uplink_ports": uplink_ports,
         "_flags": {
             "hostname": bool(form.get("hostname")),
             "ssh": bool(form.get("enable_ssh", True)),
             "snmp": bool(form.get("enable_snmp", True)),
             "user": bool(form.get("enable_user", True)),
+            "web": bool(form.get("enable_web", True)),
+            "segmentation": bool(form.get("enable_segmentation", True)),
+            "loopback": bool(form.get("enable_loopback", True)),
+            "storm_control": bool(form.get("enable_storm", True)),
         },
     }
 
@@ -393,35 +429,65 @@ def _iter_scopes(profile, foreach, base):
         raise ValueError("Неизвестный foreach: %s" % foreach)
 
 
+def compute_ports(profile, variables):
+    """Возвращает (uplinks, subscribers) — списки номеров портов.
+    Аплинки: явно заданные оператором, иначе автоматически из tag/trunk-портов.
+    Абоненты: все физические порты коммутатора минус аплинки."""
+    ports_total = int(profile.get("ports_total", 28))
+    explicit = variables.get("_uplink_ports")
+    if explicit:
+        uplinks = sorted(set(explicit))
+    else:
+        uplinks = sorted({p for g in variables["_ports"]
+                          if g["mode"] == "trunk" for p in g["port_list"]})
+    upset = set(uplinks)
+    subscribers = [p for p in range(1, ports_total + 1) if p not in upset]
+    return uplinks, subscribers
+
+
 def build_commands(profile, variables):
     """Возвращает список {'section':..., 'cmd':..., 'replies': [...]}"""
     sections = profile.get("sections", {})
     flags = variables["_flags"]
     plan = []
 
+    prefix = profile.get("port_prefix", "")
+    uplinks, subscribers = compute_ports(profile, variables)
+    # расширенная область видимости для секций web/segmentation/loopback/storm
+    scope = dict(variables,
+                 uplink_range=_iface_range(uplinks, prefix) if uplinks else "",
+                 uplink_csv=",".join(str(p) for p in uplinks),
+                 sub_ports_range=_iface_range(subscribers, prefix) if subscribers else "")
+
     for sec_id in SECTION_ORDER:
         if sec_id in flags and not flags[sec_id]:
             continue
+        # секции, требующие конкретных портов — пропускаем, если портов нет
+        if sec_id == "segmentation" and (not uplinks or not subscribers):
+            continue
+        if sec_id in ("loopback", "storm_control") and not subscribers:
+            continue
+
         spec = sections.get(sec_id)
         if not spec:
             continue
 
         if isinstance(spec, dict) and "foreach" in spec:
             items = [_norm(c) for c in spec["commands"]]
-            for scope in _iter_scopes(profile, spec["foreach"], variables):
+            for sc in _iter_scopes(profile, spec["foreach"], variables):
                 for it in items:
                     plan.append({
                         "section": sec_id,
-                        "cmd": render(it["cmd"], scope),
-                        "replies": [render(r, scope) for r in it["replies"]],
+                        "cmd": render(it["cmd"], sc),
+                        "replies": [render(r, sc) for r in it["replies"]],
                         "timeout": it["timeout"],
                     })
         else:
             for it in [_norm(c) for c in spec]:
                 plan.append({
                     "section": sec_id,
-                    "cmd": render(it["cmd"], variables),
-                    "replies": [render(r, variables) for r in it["replies"]],
+                    "cmd": render(it["cmd"], scope),
+                    "replies": [render(r, scope) for r in it["replies"]],
                     "timeout": it["timeout"],
                 })
     return plan

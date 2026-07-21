@@ -37,12 +37,23 @@ dlink_dgs1250:
   prompts: ["#", ">"]
   enable: ["enable"]
   port_prefix: "1/0/"
+  ports_total: 28              # всего физических портов (для расчёта абонентских)
+  # --- команды для отдельных функций (читаются программой напрямую) ---
+  # Сброс к заводским. reset system спрашивает подтверждение — программа ответит y.
+  reset:
+    - "reset system"
+  show_running: "show running-config"   # для автобэкапа
+  verify: "show ip interface brief"      # проверка, что IP применился
+  facts: "show version"                  # для чтения MAC/версии в реестр
   error_patterns:
     - "Next possible completions"
     - "Available commands"
     - "Invalid input"
     - "Unrecognized command"
     - "Ambiguous command"
+    - "Incomplete command"
+    - "ERROR"            # напр. "ERROR: Conflicted subnet addresses" — тихий отказ
+    - "Conflicted"
   auto_answers:
     - match: "\\[y/n\\]"
       send: "y"
@@ -60,6 +71,15 @@ dlink_dgs1250:
         - "name {{vlan_name}}"
         - "exit"
     mgmt:
+      # DGS-1250 держит один управляющий IP. Заводской 10.90.90.90 стоит с маской
+      # 255.0.0.0 (/8) и занимает всю сеть 10.0.0.0/8 — из-за этого адрес 10.79.x на
+      # другом VLAN отклоняется («ERROR: Conflicted subnet addresses»). Поэтому
+      # сначала снимаем заводской адрес с VLAN 1, затем ставим наш на управляющий
+      # VLAN. На уже настроенном (не заводском) коммутаторе, где 10.90.90.90 уже нет,
+      # две строки снятия можно закомментировать.
+      - "interface vlan 1"
+      - "no ip address 10.90.90.90 255.0.0.0"
+      - "exit"
       - "interface vlan {{mgmt_vlan}}"
       - "ip address {{mgmt_ip}} {{mgmt_mask}}"
       - "exit"
@@ -90,6 +110,12 @@ dlink_dgs1250:
       # Удаление заводских community (если их нет, коммутатор вернёт ошибку):
       # - "no snmp-server community public"
       # - "no snmp-server community private"
+    # Включение веб-интерфейса (по умолчанию на DGS-1250 выключен).
+    # ТРЕБУЕТ ОБКАТКИ: точный синтаксис может отличаться. HTTP-строку при желании
+    # можно закомментировать, оставив только HTTPS (secure-server).
+    web:
+      - "ip http server"
+      - "ip http secure-server"
     ports_access:
       foreach: port_groups_access
       commands:
@@ -104,6 +130,29 @@ dlink_dgs1250:
         - "switchport mode trunk"
         - "switchport trunk allowed vlan {{vlans_csv}}"
         - "exit"
+    # --- Изоляция абонентов (traffic segmentation) ---
+    # Абонентские порты (все, кроме аплинков) могут слать трафик ТОЛЬКО на аплинки,
+    # то есть друг друга не видят. {{sub_ports_range}} и {{uplink_range}} программа
+    # подставляет сама. ТРЕБУЕТ ОБКАТКИ: синтаксис traffic-segmentation у D-Link
+    # между сериями отличается.
+    segmentation:
+      - "interface range ethernet {{sub_ports_range}}"
+      - "traffic-segmentation forward interface ethernet {{uplink_range}}"
+      - "exit"
+    # --- Защита от петель (Loopback Detection) на абонентских портах ---
+    # ТРЕБУЕТ ОБКАТКИ.
+    loopback:
+      - "loopback-detection"
+      - "interface range ethernet {{sub_ports_range}}"
+      - "loopback-detection"
+      - "exit"
+    # --- Storm control на абонентских портах (ограничение штормов) ---
+    # Порог 5% — при необходимости поправьте. ТРЕБУЕТ ОБКАТКИ.
+    storm_control:
+      - "interface range ethernet {{sub_ports_range}}"
+      - "storm-control broadcast level 5"
+      - "storm-control multicast level 5"
+      - "exit"
     save:
       - "end"
       - cmd: "copy running-config startup-config"
@@ -111,6 +160,9 @@ dlink_dgs1250:
 
 eltex_mes:
   title: "Eltex MES (MES2300/3300/2400)"
+  reset: ["delete startup-config", "reload"]     # ТРЕБУЕТ ОБКАТКИ
+  show_running: "show running-config"
+  verify: "show ip interface brief"
   baudrate: 115200
   prompts: ["#", ">"]
   enable: ["enable"]
@@ -165,6 +217,8 @@ eltex_mes:
 
 tplink_t:
   title: "TP-Link T1500/T1600/T2600"
+  reset: ["reset"]                                # ТРЕБУЕТ ОБКАТКИ
+  show_running: "show running-config"
   baudrate: 38400
   prompts: ["#", ">"]
   enable: ["enable"]
@@ -213,6 +267,8 @@ tplink_t:
 
 zyxel_gs:
   title: "Zyxel GS1900 / GS2210 / XGS"
+  reset: ["erase running-config", "reboot"]       # ТРЕБУЕТ ОБКАТКИ
+  show_running: "show running-config"
   baudrate: 115200
   prompts: ["#", ">"]
   enable: ["enable"]
@@ -261,6 +317,8 @@ zyxel_gs:
 
 dlink_legacy:
   title: "D-Link DES-3xxx / DGS-3xxx (СТАРЫЙ CLI, не для DGS-1250!)"
+  reset: ["reset config", "reboot"]               # ТРЕБУЕТ ОБКАТКИ
+  show_running: "show config current_config"
   baudrate: 115200
   prompts: ["#", ">", ":admin#"]
   enable: []
