@@ -16,7 +16,7 @@ import customtkinter as ctk
 import config_builder as cb
 import serial_session as ss
 
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 APP_TITLE = "UTECH-switch master"
 BAUD_RATES = ["9600", "19200", "38400", "57600", "115200"]
 
@@ -35,8 +35,8 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("%s  v%s" % (APP_TITLE, APP_VERSION))
-        self.geometry("980x960")
-        self.minsize(920, 820)
+        self.geometry("1200x780")
+        self.minsize(1000, 600)
 
         self.log_queue = queue.Queue()
         self.worker = None
@@ -59,41 +59,61 @@ class App(ctk.CTk):
     #  Вёрстка
     # ====================================================================
     def _build_ui(self):
-        # адаптивный размер под экран (без прокрутки — всё на одном экране)
+        # адаптивный размер под экран (двухколоночная раскладка, без прокрутки)
         try:
             sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-            w = min(1180, max(900, sw - 100))
-            h = min(1000, max(640, sh - 100))
-            self.geometry("%dx%d+%d+%d" % (w, h, 30, 20))
+            w = min(1320, max(1040, sw - 100))
+            h = min(920, max(620, sh - 90))
+            self.geometry("%dx%d+%d+%d" % (w, h, 25, 15))
         except Exception:
             pass
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)     # тело растягивается
 
-        root = ctk.CTkFrame(self, fg_color="transparent")
-        root.grid(row=0, column=0, sticky="nsew", padx=12, pady=(8, 4))
-        root.grid_columnconfigure(0, weight=1)
-        root.grid_rowconfigure(8, weight=1)   # журнал растягивается, остальное фиксировано
+        # --- шапка (во всю ширину) ---
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 2))
+        self._build_header(header)
 
-        self._build_header(root)
-        self._build_connection(root)
-        self._build_params(root)
-        self._build_vlans(root)
-        self._build_security(root)
-        self._build_actions(root)
-        self._build_log(root)
+        # --- тело: слева настройки, справа журнал ---
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=0)
+        body.grid_columnconfigure(0, weight=0)  # колонка настроек — по содержимому
+        body.grid_columnconfigure(1, weight=1)  # журнал — тянется
+        body.grid_rowconfigure(0, weight=1)
+
+        left = ctk.CTkFrame(body, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_columnconfigure(0, weight=1)
+        self._build_connection(left, 0)
+        self._build_params(left, 1)
+        self._build_vlans(left, 2)
+        self._build_security(left, 3)
+
+        right = ctk.CTkFrame(body, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(0, weight=1)
+        self._build_log(right)
+
+        # --- нижняя панель кнопок (во всю ширину, всегда видна) ---
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 2))
+        self._build_actions(bottom)
+
+        self.progress = ctk.CTkProgressBar(self)
+        self.progress.set(0)
+        self.progress.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
 
         self.refresh_ports()
         self._model_changed()
 
     def _build_header(self, parent):
-        head = ctk.CTkFrame(parent, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", pady=(0, 2))
-        head.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(head, text="%s" % APP_TITLE,
+        parent.grid_columnconfigure(2, weight=1)
+        ctk.CTkLabel(parent, text="%s" % APP_TITLE,
                      font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(head, text="настройка коммутаторов через USB-COM · v%s" % APP_VERSION,
+        ctk.CTkLabel(parent, text="настройка коммутаторов через USB-COM · v%s" % APP_VERSION,
                      font=ctk.CTkFont(size=12), text_color=("gray40", "gray60"))\
             .grid(row=0, column=1, sticky="w", padx=(10, 0))
 
@@ -114,8 +134,8 @@ class App(ctk.CTk):
         return e
 
     # -------------------------------------------------------- подключение
-    def _build_connection(self, parent):
-        card = self._card(parent, 1, "1.  Подключение")
+    def _build_connection(self, parent, row):
+        card = self._card(parent, row, "1.  Подключение")
 
         ctk.CTkLabel(card, text="COM-порт:").grid(row=1, column=0, sticky="w", padx=(CARD_PAD, 4), pady=6)
         self.opt_port = ctk.CTkOptionMenu(card, width=240, values=["—"])
@@ -144,8 +164,8 @@ class App(ctk.CTk):
                      font=ctk.CTkFont(size=11)).grid(row=3, column=2, sticky="w", padx=0, pady=(0, 8))
 
     # -------------------------------------------------------- параметры
-    def _build_params(self, parent):
-        card = self._card(parent, 2, "2.  Параметры коммутатора")
+    def _build_params(self, parent, row):
+        card = self._card(parent, row, "2.  Параметры коммутатора")
 
         self.e_hostname = self._entry(card, 1, 0, "Имя устройства:", "SW-OFFICE-01")
         self.e_ip = self._entry(card, 1, 2, "IP управления:", "10.79.")
@@ -185,8 +205,8 @@ class App(ctk.CTk):
                 e.configure(state="disabled")
 
     # -------------------------------------------------------- VLAN
-    def _build_vlans(self, parent):
-        card = self._card(parent, 3, "3.  VLAN")
+    def _build_vlans(self, parent, row):
+        card = self._card(parent, row, "3.  VLAN")
         card.grid_columnconfigure(0, weight=1)
 
         hint = ("Заполните поля и нажмите «Добавить». Порты, не указанные ни в одном "
@@ -232,8 +252,8 @@ class App(ctk.CTk):
         self.vlan_list.grid_columnconfigure(0, weight=1)
 
     # -------------------------------------------------------- безопасность
-    def _build_security(self, parent):
-        card = self._card(parent, 4, "4.  Безопасность и доступ")
+    def _build_security(self, parent, row):
+        card = self._card(parent, row, "4.  Безопасность и доступ")
         card.grid_columnconfigure(5, weight=1)
 
         self.e_uplink = self._entry(card, 1, 0,
@@ -259,47 +279,38 @@ class App(ctk.CTk):
 
     # -------------------------------------------------------- кнопки
     def _build_actions(self, parent):
-        bar = ctk.CTkFrame(parent, fg_color="transparent")
-        bar.grid(row=5, column=0, sticky="ew", pady=(4, 4))
-        bar.grid_columnconfigure(5, weight=1)
+        # spacer-колонка между основными и правыми кнопками
+        parent.grid_columnconfigure(4, weight=1)
 
-        ctk.CTkButton(bar, text="Проверить связь", width=140, command=self.test_link)\
-            .grid(row=0, column=0, padx=(0, 8))
-        ctk.CTkButton(bar, text="Показать команды", width=150,
+        ctk.CTkButton(parent, text="Проверить связь", width=150, height=38,
+                      command=self.test_link).grid(row=0, column=0, padx=(0, 6), pady=2)
+        ctk.CTkButton(parent, text="Показать команды", width=150, height=38,
                       fg_color="transparent", border_width=1, command=self.preview)\
-            .grid(row=0, column=1, padx=(0, 8))
+            .grid(row=0, column=1, padx=(0, 6), pady=2)
         self.btn_apply = ctk.CTkButton(
-            bar, text="НАСТРОИТЬ КОММУТАТОР", width=220, height=40,
+            parent, text="НАСТРОИТЬ КОММУТАТОР", width=230, height=38,
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.apply)
-        self.btn_apply.grid(row=0, column=2, padx=(0, 8))
-        ctk.CTkButton(bar, text="Прочитать настройки", width=160,
+        self.btn_apply.grid(row=0, column=2, padx=(0, 6), pady=2)
+        ctk.CTkButton(parent, text="Прочитать настройки", width=160, height=38,
                       fg_color="transparent", border_width=1, command=self.do_read_config)\
-            .grid(row=0, column=3, padx=(0, 8))
-        ctk.CTkButton(bar, text="Сохранить лог", width=120,
+            .grid(row=0, column=3, padx=(0, 6), pady=2)
+
+        ctk.CTkButton(parent, text="Сохранить лог", width=120, height=38,
                       fg_color="transparent", border_width=1, command=self.save_log)\
-            .grid(row=0, column=6, sticky="e")
-
-        # вторая строка — опасное действие отдельно
-        bar2 = ctk.CTkFrame(parent, fg_color="transparent")
-        bar2.grid(row=6, column=0, sticky="ew", pady=(0, 4))
-        ctk.CTkButton(bar2, text="Сбросить к заводским", width=180,
+            .grid(row=0, column=5, padx=(0, 6), pady=2)
+        ctk.CTkButton(parent, text="Сбросить к заводским", width=180, height=38,
                       fg_color=DANGER, hover_color=DANGER_HOVER, command=self.do_reset)\
-            .grid(row=0, column=0, sticky="w")
-
-        self.progress = ctk.CTkProgressBar(parent)
-        self.progress.set(0)
-        self.progress.grid(row=7, column=0, sticky="ew", pady=(6, 4))
+            .grid(row=0, column=6, padx=0, pady=2)
 
     def _build_log(self, parent):
         card = ctk.CTkFrame(parent, corner_radius=10)
-        card.grid(row=8, column=0, sticky="nsew", pady=(3, 4))
+        card.grid(row=0, column=0, sticky="nsew")
         card.grid_columnconfigure(0, weight=1)
         card.grid_rowconfigure(1, weight=1)
         ctk.CTkLabel(card, text="Журнал", font=ctk.CTkFont(size=14, weight="bold"))\
             .grid(row=0, column=0, sticky="w", padx=CARD_PAD, pady=(6, 1))
-        self.txt_log = ctk.CTkTextbox(card, height=110,
-                                      font=ctk.CTkFont(family="Consolas", size=12))
+        self.txt_log = ctk.CTkTextbox(card, font=ctk.CTkFont(family="Consolas", size=12))
         self.txt_log.grid(row=1, column=0, sticky="nsew", padx=CARD_PAD, pady=(0, CARD_PAD))
 
     # ====================================================================
