@@ -99,32 +99,61 @@ class SerialSession(object):
         return answered
 
     # ------------------------------------------------------------------- сценарий
-    def wake_up(self, username, password, timeout=10):
-        """Будит консоль, при необходимости логинится. Возвращает весь собранный
-        текст (баннер + приглашение) — используется для определения модели."""
-        self.ser.reset_input_buffer()
-        self._write("")
-        out = self._read_until(self.prompts + ["ogin:", "sername:", "assword:"], timeout=timeout)
-        full = out
+    def _looks_like_prompt(self, tail):
+        low = tail.lower()
+        return (any(p in tail for p in self.prompts)
+                and "assword" not in low
+                and "sername" not in low and "ogin:" not in low)
 
+    def wake_up(self, username, password, timeout=10):
+        """Будит консоль и логинится, устойчиво к остаточному состоянию строки
+        (например, когда консоль уже показывает UserName:). Возвращает весь
+        собранный текст (баннер + приглашение) — для определения модели.
+
+        ВАЖНО: сначала ЧИТАЕМ, что на экране, и «будим» пустым Enter только при
+        полной тишине — иначе лишний Enter на приглашении UserName: отправлял бы
+        пустой логин и вход срывался."""
+        wake = self.prompts + ["ogin:", "sername:", "assword:"]
+        self.ser.reset_input_buffer()
+
+        out = self._read_until(wake, timeout=3)
         if not out.strip():
+            self._write("")                       # будильник только при тишине
+            out = self._read_until(wake, timeout=timeout)
+        full = out
+        got_any = bool(out.strip())
+
+        sent_user = sent_pass = 0
+        deadline = time.time() + timeout * 3
+        while time.time() < deadline:
+            tail = out[-200:]
+            if out.strip():
+                got_any = True
+            if self._looks_like_prompt(tail):
+                break
+            if re.search(r"(ogin|sername)\s*:", tail):
+                if sent_user >= 4:
+                    break
+                if sent_user == 0:
+                    self.log("Запрошен логин, ввожу учётные данные...")
+                self._write(username)
+                sent_user += 1
+            elif "assword" in tail.lower():
+                if sent_pass >= 4:
+                    break
+                self._write(password)
+                sent_pass += 1
+            else:
+                self._write("")                   # ничего не распознали — лёгкий повтор
+            out = self._read_until(wake, timeout=6)
+            full += out
+
+        if not got_any:
             raise SwitchError(
                 "Коммутатор не отвечает. Проверьте кабель, номер COM-порта и "
-                "скорость (частые значения: 115200, 38400, 9600)."
-            )
-
-        if re.search(r"(ogin|sername)\s*:", out[-120:]):
-            self.log("Запрошен логин, ввожу учётные данные...")
-            self._write(username)
-            out = self._read_until(["assword:"] + self.prompts, timeout=timeout)
-            full += out
-        if "assword" in out[-120:]:
-            self._write(password)
-            out = self._read_until(self.prompts, timeout=timeout)
-            full += out
-
-        if not any(p in out[-120:] for p in self.prompts):
-            raise SwitchError("Не удалось получить приглашение CLI. Возможно, неверный пароль.")
+                "скорость (частые значения: 115200, 38400, 9600).")
+        if not self._looks_like_prompt(full[-200:]) and not any(p in full[-200:] for p in self.prompts):
+            raise SwitchError("Не удалось войти в CLI. Возможно, неверный логин/пароль или скорость.")
 
         for cmd in self.profile.get("enable", []):
             self._write(cmd)
@@ -133,6 +162,8 @@ class SerialSession(object):
             if "assword" in out[-120:]:
                 self._write(password)
                 full += self._read_until(self.prompts, timeout=timeout)
+
+        self.log("Связь с коммутатором установлена.")
         return full
 
     def identify(self, username, password, profiles):

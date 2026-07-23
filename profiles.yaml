@@ -327,7 +327,9 @@ zyxel_gs:
 dlink_legacy:
   title: "D-Link DES-3xxx / DGS-3xxx (СТАРЫЙ CLI, не для DGS-1250!)"
   detect: ["DES-3028", "DES-3526", "DES-3200", "DES-3550", "DES-3010", "DGS-3100", "DGS-3200", "DGS-3600"]
-  reset: ["reset config", "reboot"]               # ТРЕБУЕТ ОБКАТКИ
+  # ВАЖНО: "reset config" у старых D-Link СОХРАНЯЕТ IP и учётки (только настройки).
+  # Для полного сброса, включая логин/пароль, нужен "reset system" (сам перезагружает).
+  reset: ["reset system"]
   show_running: "show config current_config"
   baudrate: 115200
   prompts: ["#", ">", ":admin#"]
@@ -371,4 +373,4 @@ dlink_legacy:
       commands:
         - "config vlan vlanid {{vlans_csv}} add tagged {{port_range}}"
     save:
-      - "save"
+      - "save all"
