@@ -33,6 +33,7 @@ defaults:
 
 dlink_dgs1250:
   title: "D-Link DGS-1250-28X/A1A (industrial-like CLI)"
+  detect: ["DGS-1250"]        # признаки в баннере/выводе для авто-определения
   baudrate: 115200
   prompts: ["#", ">"]
   enable: ["enable"]
@@ -160,6 +161,7 @@ dlink_dgs1250:
 
 eltex_mes:
   title: "Eltex MES (MES2300/3300/2400)"
+  detect: ["Eltex", "MES23", "MES24", "MES21", "MES33", "MES-"]
   reset: ["delete startup-config", "reload"]     # ТРЕБУЕТ ОБКАТКИ
   show_running: "show running-config"
   verify: "show ip interface brief"
@@ -178,10 +180,15 @@ eltex_mes:
   sections:
     enter_config: ["configure terminal"]
     hostname: ["hostname {{hostname}}"]
+    # Eltex MES (CLI в стиле Cisco-SBS): VLAN создаётся в режиме "vlan database",
+    # а имя задаётся отдельно на "interface vlan". ТРЕБУЕТ ОБКАТКИ.
     vlans:
       foreach: vlans
       commands:
+        - "vlan database"
         - "vlan {{vlan_id}}"
+        - "exit"
+        - "interface vlan {{vlan_id}}"
         - "name {{vlan_name}}"
         - "exit"
     mgmt:
@@ -217,6 +224,7 @@ eltex_mes:
 
 tplink_t:
   title: "TP-Link T1500/T1600/T2600"
+  detect: ["TP-LINK", "TP-Link", "JetStream", "T1500", "T1600", "T2600"]
   reset: ["reset"]                                # ТРЕБУЕТ ОБКАТКИ
   show_running: "show running-config"
   baudrate: 38400
@@ -267,6 +275,7 @@ tplink_t:
 
 zyxel_gs:
   title: "Zyxel GS1900 / GS2210 / XGS"
+  detect: ["Zyxel", "ZyXEL", "GS1900", "GS2210", "XGS"]
   reset: ["erase running-config", "reboot"]       # ТРЕБУЕТ ОБКАТКИ
   show_running: "show running-config"
   baudrate: 115200
@@ -317,6 +326,7 @@ zyxel_gs:
 
 dlink_legacy:
   title: "D-Link DES-3xxx / DGS-3xxx (СТАРЫЙ CLI, не для DGS-1250!)"
+  detect: ["DES-3028", "DES-3526", "DES-3200", "DES-3550", "DES-3010", "DGS-3100", "DGS-3200", "DGS-3600"]
   reset: ["reset config", "reboot"]               # ТРЕБУЕТ ОБКАТКИ
   show_running: "show config current_config"
   baudrate: 115200
@@ -336,7 +346,8 @@ dlink_legacy:
       commands:
         - "create vlan {{vlan_name}} tag {{vlan_id}}"
     mgmt:
-      - "config ipif System vlan {{mgmt_vlan_name}} ipaddress {{mgmt_ip}}/{{mgmt_prefix}}"
+      # DES-3526/3028/3200: сначала ipaddress, потом vlan (проверено по CLI-мануалу).
+      - "config ipif System ipaddress {{mgmt_ip}}/{{mgmt_prefix}} vlan {{mgmt_vlan_name}}"
       - "create iproute default {{gateway}}"
     user:
       - cmd: "create account admin {{username}}"

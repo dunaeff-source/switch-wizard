@@ -100,10 +100,12 @@ class SerialSession(object):
 
     # ------------------------------------------------------------------- сценарий
     def wake_up(self, username, password, timeout=10):
-        """Будит консоль и при необходимости логинится."""
+        """Будит консоль, при необходимости логинится. Возвращает весь собранный
+        текст (баннер + приглашение) — используется для определения модели."""
         self.ser.reset_input_buffer()
         self._write("")
         out = self._read_until(self.prompts + ["ogin:", "sername:", "assword:"], timeout=timeout)
+        full = out
 
         if not out.strip():
             raise SwitchError(
@@ -115,9 +117,11 @@ class SerialSession(object):
             self.log("Запрошен логин, ввожу учётные данные...")
             self._write(username)
             out = self._read_until(["assword:"] + self.prompts, timeout=timeout)
+            full += out
         if "assword" in out[-120:]:
             self._write(password)
             out = self._read_until(self.prompts, timeout=timeout)
+            full += out
 
         if not any(p in out[-120:] for p in self.prompts):
             raise SwitchError("Не удалось получить приглашение CLI. Возможно, неверный пароль.")
@@ -125,9 +129,42 @@ class SerialSession(object):
         for cmd in self.profile.get("enable", []):
             self._write(cmd)
             out = self._read_until(self.prompts + ["assword:"], timeout=timeout)
+            full += out
             if "assword" in out[-120:]:
                 self._write(password)
-                self._read_until(self.prompts, timeout=timeout)
+                full += self._read_until(self.prompts, timeout=timeout)
+        return full
+
+    def identify(self, username, password, profiles):
+        """Определяет марку/модель: логинится, читает баннер и, если нужно, вывод
+        show-команд, сопоставляет с detect-шаблонами профилей.
+        Возвращает (ключ_профиля | None, собранный_текст)."""
+        self.open()
+        try:
+            text = self.wake_up(username, password) or ""
+            key = self._match_profile(text, profiles)
+            if not key:
+                # баннера не хватило — пробуем типовые команды идентификации
+                for cmd in ("show version", "show switch", "show system"):
+                    try:
+                        text += "\n" + self.capture(cmd, timeout=8)
+                    except Exception:
+                        pass
+                    key = self._match_profile(text, profiles)
+                    if key:
+                        break
+            return key, text
+        finally:
+            self.close()
+
+    @staticmethod
+    def _match_profile(text, profiles):
+        low = (text or "").lower()
+        for key, prof in profiles.items():
+            for pat in (prof.get("detect") or []):
+                if pat and pat.lower() in low:
+                    return key
+        return None
 
         self.log("Связь с коммутатором установлена.")
         return True

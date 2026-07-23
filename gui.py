@@ -24,7 +24,7 @@ ACCENT = "#2FA572"
 ACCENT_HOVER = "#268A5E"
 DANGER = "#C0504D"
 DANGER_HOVER = "#9E3B38"
-CARD_PAD = 12
+CARD_PAD = 8
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -41,6 +41,7 @@ class App(ctk.CTk):
         self.log_queue = queue.Queue()
         self.worker = None
         self.vlans = []
+        self.detected_key = None       # профиль, подтверждённый «Проверить связь»
 
         try:
             self.defaults, self.profiles = cb.load_config()
@@ -58,12 +59,22 @@ class App(ctk.CTk):
     #  Вёрстка
     # ====================================================================
     def _build_ui(self):
+        # адаптивный размер под экран (без прокрутки — всё на одном экране)
+        try:
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            w = min(1180, max(900, sw - 100))
+            h = min(1000, max(640, sh - 100))
+            self.geometry("%dx%d+%d+%d" % (w, h, 30, 20))
+        except Exception:
+            pass
+
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        root = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        root.grid(row=0, column=0, sticky="nsew", padx=16, pady=(12, 4))
+        root = ctk.CTkFrame(self, fg_color="transparent")
+        root.grid(row=0, column=0, sticky="nsew", padx=12, pady=(8, 4))
         root.grid_columnconfigure(0, weight=1)
+        root.grid_rowconfigure(8, weight=1)   # журнал растягивается, остальное фиксировано
 
         self._build_header(root)
         self._build_connection(root)
@@ -78,28 +89,28 @@ class App(ctk.CTk):
 
     def _build_header(self, parent):
         head = ctk.CTkFrame(parent, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        head.grid(row=0, column=0, sticky="ew", pady=(0, 2))
         head.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(head, text="%s" % APP_TITLE,
-                     font=ctk.CTkFont(size=26, weight="bold")).grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(head, text="Автоматическая настройка коммутаторов через USB-COM   ·   версия %s" % APP_VERSION,
-                     font=ctk.CTkFont(size=13), text_color=("gray40", "gray60"))\
-            .grid(row=1, column=0, sticky="w")
+                     font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(head, text="настройка коммутаторов через USB-COM · v%s" % APP_VERSION,
+                     font=ctk.CTkFont(size=12), text_color=("gray40", "gray60"))\
+            .grid(row=0, column=1, sticky="w", padx=(10, 0))
 
     def _card(self, parent, row, title):
-        card = ctk.CTkFrame(parent, corner_radius=12)
-        card.grid(row=row, column=0, sticky="ew", pady=8)
-        ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=15, weight="bold"))\
-            .grid(row=0, column=0, columnspan=6, sticky="w", padx=CARD_PAD, pady=(CARD_PAD, 2))
+        card = ctk.CTkFrame(parent, corner_radius=10)
+        card.grid(row=row, column=0, sticky="ew", pady=3)
+        ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=14, weight="bold"))\
+            .grid(row=0, column=0, columnspan=6, sticky="w", padx=CARD_PAD, pady=(6, 1))
         return card
 
-    def _entry(self, parent, row, col, label, default="", width=180, show=None):
+    def _entry(self, parent, row, col, label, default="", width=170, show=None):
         ctk.CTkLabel(parent, text=label).grid(
-            row=row, column=col, sticky="w", padx=(CARD_PAD, 4), pady=6)
-        e = ctk.CTkEntry(parent, width=width, show=show)
+            row=row, column=col, sticky="w", padx=(CARD_PAD, 4), pady=3)
+        e = ctk.CTkEntry(parent, width=width, height=28, show=show)
         if default:
             e.insert(0, default)
-        e.grid(row=row, column=col + 1, sticky="w", padx=(0, CARD_PAD), pady=6)
+        e.grid(row=row, column=col + 1, sticky="w", padx=(0, CARD_PAD), pady=3)
         return e
 
     # -------------------------------------------------------- подключение
@@ -281,12 +292,13 @@ class App(ctk.CTk):
         self.progress.grid(row=7, column=0, sticky="ew", pady=(6, 4))
 
     def _build_log(self, parent):
-        card = ctk.CTkFrame(parent, corner_radius=12)
-        card.grid(row=8, column=0, sticky="nsew", pady=(4, 8))
+        card = ctk.CTkFrame(parent, corner_radius=10)
+        card.grid(row=8, column=0, sticky="nsew", pady=(3, 4))
         card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(card, text="Журнал", font=ctk.CTkFont(size=15, weight="bold"))\
-            .grid(row=0, column=0, sticky="w", padx=CARD_PAD, pady=(CARD_PAD, 2))
-        self.txt_log = ctk.CTkTextbox(card, height=200,
+        card.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(card, text="Журнал", font=ctk.CTkFont(size=14, weight="bold"))\
+            .grid(row=0, column=0, sticky="w", padx=CARD_PAD, pady=(6, 1))
+        self.txt_log = ctk.CTkTextbox(card, height=110,
                                       font=ctk.CTkFont(family="Consolas", size=12))
         self.txt_log.grid(row=1, column=0, sticky="nsew", padx=CARD_PAD, pady=(0, CARD_PAD))
 
@@ -369,13 +381,21 @@ class App(ctk.CTk):
 
     def _model_changed(self, _event=None):
         self.opt_baud.set(str(self._profile().get("baudrate", 115200)))
+        # ручная смена модели сбрасывает подтверждённое определение
+        if self.detected_key and self._selected_key() != self.detected_key:
+            self.detected_key = None
+            self.log("Модель изменена вручную — определение сброшено. "
+                     "Нажмите «Проверить связь» перед настройкой.")
 
-    def _profile(self):
+    def _selected_key(self):
         title = self.opt_model.get()
         for k in self.profile_keys:
             if self.profiles[k].get("title", k) == title:
-                return self.profiles[k]
-        return self.profiles[self.profile_keys[0]]
+                return k
+        return None
+
+    def _profile(self):
+        return self.profiles[self._selected_key() or self.profile_keys[0]]
 
     def refresh_ports(self):
         ports = ss.list_com_ports()
@@ -463,21 +483,40 @@ class App(ctk.CTk):
         except Exception as exc:
             messagebox.showerror("Ошибка", str(exc))
             return
-        baud, prof = self.opt_baud.get(), self._profile()
+        baud = self.opt_baud.get()
         user, pw = self.e_login_user.get().strip(), self.e_login_pass.get()
+        profiles = self.profiles
+        # универсальный профиль для определения (модель пока неизвестна)
+        detect_profile = {"prompts": ["#", ">", ":admin#"],
+                          "enable": [], "error_patterns": [], "auto_answers": []}
 
         def job():
-            sess = ss.SerialSession(port, baud, self.log, prof)
+            sess = ss.SerialSession(port, baud, self.log, detect_profile)
             try:
-                sess.open()
-                sess.wake_up(user, pw)
+                key, _text = sess.identify(user, pw, profiles)
+                if key:
+                    title = profiles[key].get("title", key)
+                    self.detected_key = key
+                    self.log("✓ Связь есть. Определён коммутатор → %s" % title)
+                    self.log("  Модель распознана — «Настроить коммутатор» разблокирована.")
+                    self.after(0, lambda t=title: (self.opt_model.set(t), self._model_changed()))
+                else:
+                    self.detected_key = None
+                    self.log("✓ Связь есть, но МОДЕЛЬ НЕ ОПРЕДЕЛЕНА — настройка заблокирована.")
+                    self.log("  Проверьте кабель/скорость и повторите «Проверить связь». "
+                             "Если модель поддерживается, но не распознаётся — пришлите лог, "
+                             "добавим её признаки.")
             except Exception as exc:
                 self.log("ОШИБКА: %s" % exc)
-            finally:
-                sess.close()
         self._run_async(job)
 
     def apply(self):
+        if not self.detected_key:
+            messagebox.showwarning(
+                "Сначала определите модель",
+                "Настройка возможна только после определения модели.\n"
+                "Нажмите «Проверить связь» — программа сама определит коммутатор.")
+            return
         try:
             port = self._selected_port()
             variables, plan = self._collect()
