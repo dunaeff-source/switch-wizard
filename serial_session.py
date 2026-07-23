@@ -197,9 +197,6 @@ class SerialSession(object):
                     return key
         return None
 
-        self.log("Связь с коммутатором установлена.")
-        return True
-
     def send(self, cmd, replies=None, timeout=15, secret=None):
         """Отправляет команду, ждёт приглашение, возвращает ответ устройства."""
         shown = cmd.replace(secret, "********") if secret else cmd
@@ -285,17 +282,25 @@ class SerialSession(object):
             for cmd in (reset_cmds or []):
                 self.log("> %s" % cmd)
                 self._write(cmd)
-                out = self._read_until(
-                    self.prompts + ["y/n", "yes/no", "confirm", "proceed", "sure"],
-                    timeout=15)
-                if re.search(r"y/n|yes/no|confirm|proceed|sure", out[-200:], re.IGNORECASE):
+                # Ждём ИМЕННО вопрос-подтверждение (не приглашение!), затем
+                # отвечаем "y". Раньше в список ожидания входили приглашения #/>,
+                # и чтение возвращалось раньше, чем появлялся вопрос, — из-за чего
+                # "y" не отправлялся и сброс отменялся.
+                self._read_until(
+                    ["y/n", "y / n", "(y", "yes/no", "proceed", "sure", "confirm",
+                     "will be", "continue", "reset"],
+                    timeout=12)
+                # Подтверждаем в любом случае, дважды и с Enter — на случай
+                # двойного запроса ("Are you sure" + "Save?"). Лишний "y" на
+                # приглашении безвреден.
+                for _ in range(2):
                     self._write("y")
-                    try:
-                        self._read_until(self.prompts, timeout=10)
-                    except Exception:
-                        pass
+                    time.sleep(0.4)
+                self.log("   подтверждение отправлено (y)")
+                time.sleep(0.5)
             self.log("")
-            self.log("=== Команда сброса отправлена. Коммутатор перезагружается — "
-                     "через ~минуту вернётся к заводским (IP 10.90.90.90, admin/admin). ===")
+            self.log("=== Команда сброса отправлена и подтверждена. Коммутатор "
+                     "перезагружается — вернётся к заводским (пустой конфиг, "
+                     "заводской вход). ===")
         finally:
             self.close()

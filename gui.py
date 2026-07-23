@@ -16,7 +16,7 @@ import customtkinter as ctk
 import config_builder as cb
 import serial_session as ss
 
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 APP_TITLE = "UTECH-switch master"
 BAUD_RATES = ["9600", "19200", "38400", "57600", "115200"]
 
