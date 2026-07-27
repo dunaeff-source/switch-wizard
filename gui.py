@@ -16,7 +16,7 @@ import customtkinter as ctk
 import config_builder as cb
 import serial_session as ss
 
-APP_VERSION = "1.4"
+APP_VERSION = "1.6"
 APP_TITLE = "UTECH-switch master"
 BAUD_RATES = ["9600", "19200", "38400", "57600", "115200"]
 
@@ -137,31 +137,52 @@ class App(ctk.CTk):
     def _build_connection(self, parent, row):
         card = self._card(parent, row, "1.  Подключение")
 
-        ctk.CTkLabel(card, text="COM-порт:").grid(row=1, column=0, sticky="w", padx=(CARD_PAD, 4), pady=6)
-        self.opt_port = ctk.CTkOptionMenu(card, width=240, values=["—"])
-        self.opt_port.grid(row=1, column=1, sticky="w", pady=6)
-        ctk.CTkButton(card, text="Обновить", width=90, command=self.refresh_ports)\
-            .grid(row=1, column=2, sticky="w", padx=8, pady=6)
+        # выбор транспорта: COM-порт или сеть (Telnet)
+        ctk.CTkLabel(card, text="Способ:").grid(row=1, column=0, sticky="w", padx=(CARD_PAD, 4), pady=3)
+        self.seg_conn = ctk.CTkSegmentedButton(
+            card, values=["COM-порт", "По сети (Telnet)"], command=self._on_conn_mode)
+        self.seg_conn.set("COM-порт")
+        self.seg_conn.grid(row=1, column=1, columnspan=2, sticky="w", pady=3)
 
-        ctk.CTkLabel(card, text="Модель:").grid(row=1, column=3, sticky="w", padx=(CARD_PAD, 4), pady=6)
+        ctk.CTkLabel(card, text="Модель:").grid(row=1, column=3, sticky="w", padx=(CARD_PAD, 4), pady=3)
         self.opt_model = ctk.CTkOptionMenu(
             card, width=280,
             values=[self.profiles[k].get("title", k) for k in self.profile_keys],
             command=self._model_changed)
-        self.opt_model.grid(row=1, column=4, sticky="w", pady=6)
+        self.opt_model.grid(row=1, column=4, sticky="w", pady=3)
 
-        ctk.CTkLabel(card, text="Скорость:").grid(row=2, column=0, sticky="w", padx=(CARD_PAD, 4), pady=6)
+        # --- поля для COM ---
+        self.lbl_port = ctk.CTkLabel(card, text="COM-порт:")
+        self.lbl_port.grid(row=2, column=0, sticky="w", padx=(CARD_PAD, 4), pady=3)
+        self.opt_port = ctk.CTkOptionMenu(card, width=220, values=["—"])
+        self.opt_port.grid(row=2, column=1, sticky="w", pady=3)
+        self.btn_refresh = ctk.CTkButton(card, text="Обновить", width=90, command=self.refresh_ports)
+        self.btn_refresh.grid(row=2, column=2, sticky="w", padx=8, pady=3)
+        self.lbl_baud = ctk.CTkLabel(card, text="Скорость:")
+        self.lbl_baud.grid(row=2, column=3, sticky="w", padx=(CARD_PAD, 4), pady=3)
         self.opt_baud = ctk.CTkOptionMenu(card, width=120, values=BAUD_RATES)
-        self.opt_baud.grid(row=2, column=1, sticky="w", pady=6)
+        self.opt_baud.grid(row=2, column=4, sticky="w", pady=3)
 
-        self.e_login_user = self._entry(card, 2, 2, "Вход (логин):",
+        # --- поля для сети (Telnet) ---
+        self.lbl_host = ctk.CTkLabel(card, text="IP коммутатора:")
+        self.lbl_host.grid(row=3, column=0, sticky="w", padx=(CARD_PAD, 4), pady=3)
+        self.e_host = ctk.CTkEntry(card, width=170)
+        self.e_host.insert(0, "10.90.90.90")
+        self.e_host.grid(row=3, column=1, sticky="w", pady=3)
+        self.lbl_tport = ctk.CTkLabel(card, text="порт:")
+        self.lbl_tport.grid(row=3, column=2, sticky="w", pady=3)
+        self.e_tport = ctk.CTkEntry(card, width=70)
+        self.e_tport.insert(0, "23")
+        self.e_tport.grid(row=3, column=3, sticky="w", pady=3)
+
+        # --- вход и оператор ---
+        self.e_login_user = self._entry(card, 4, 0, "Вход (логин):",
                                         self.defaults["login_username"], width=140)
-        self.e_login_pass = self._entry(card, 2, 4, "пароль:",
+        self.e_login_pass = self._entry(card, 4, 2, "пароль:",
                                         self.defaults["login_password"], width=140, show="*")
+        self.e_operator = self._entry(card, 4, 4, "Оператор:", "", width=150)
 
-        self.e_operator = self._entry(card, 3, 0, "Оператор:", "", width=180)
-        ctk.CTkLabel(card, text="(для реестра)", text_color=("gray40", "gray60"),
-                     font=ctk.CTkFont(size=11)).grid(row=3, column=2, sticky="w", padx=0, pady=(0, 8))
+        self._on_conn_mode()   # выставить активные поля под текущий способ
 
     # -------------------------------------------------------- параметры
     def _build_params(self, parent, row):
@@ -425,6 +446,34 @@ class App(ctk.CTk):
             raise ValueError("Не выбран COM-порт")
         return raw.split(" — ")[0]
 
+    # ---- транспорт: COM или Telnet ----
+    def _conn_mode(self):
+        return "telnet" if self.seg_conn.get().startswith("По сети") else "serial"
+
+    def _on_conn_mode(self, _v=None):
+        telnet = self._conn_mode() == "telnet"
+        ser_state = "disabled" if telnet else "normal"
+        net_state = "normal" if telnet else "disabled"
+        for w in (self.opt_port, self.btn_refresh, self.opt_baud,
+                  self.lbl_port, self.lbl_baud):
+            try: w.configure(state=ser_state)
+            except Exception: pass
+        for w in (self.e_host, self.e_tport, self.lbl_host, self.lbl_tport):
+            try: w.configure(state=net_state)
+            except Exception: pass
+        # смена способа подключения сбрасывает определение модели
+        self.detected_key = None
+
+    def _make_session(self, log, profile):
+        """Создаёт сеанс нужного транспорта по выбранному способу подключения."""
+        if self._conn_mode() == "telnet":
+            host = self.e_host.get().strip()
+            if not host:
+                raise ValueError("Не указан IP коммутатора")
+            return ss.TelnetSession(host, self.e_tport.get().strip() or "23", log, profile)
+        port = self._selected_port()
+        return ss.SerialSession(port, self.opt_baud.get(), log, profile)
+
     def log(self, text=""):
         self.log_queue.put(str(text))
 
@@ -489,20 +538,18 @@ class App(ctk.CTk):
         win.after(250, win.lift)
 
     def test_link(self):
-        try:
-            port = self._selected_port()
-        except Exception as exc:
-            messagebox.showerror("Ошибка", str(exc))
-            return
-        baud = self.opt_baud.get()
-        user, pw = self.e_login_user.get().strip(), self.e_login_pass.get()
-        profiles = self.profiles
         # универсальный профиль для определения (модель пока неизвестна)
         detect_profile = {"prompts": ["#", ">", ":admin#"],
                           "enable": [], "error_patterns": [], "auto_answers": []}
+        try:
+            sess = self._make_session(self.log, detect_profile)
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+            return
+        user, pw = self.e_login_user.get().strip(), self.e_login_pass.get()
+        profiles = self.profiles
 
         def job():
-            sess = ss.SerialSession(port, baud, self.log, detect_profile)
             try:
                 key, _text = sess.identify(user, pw, profiles)
                 if key:
@@ -528,26 +575,27 @@ class App(ctk.CTk):
                 "Настройка возможна только после определения модели.\n"
                 "Нажмите «Проверить связь» — программа сама определит коммутатор.")
             return
+        prof = self._profile()
         try:
-            port = self._selected_port()
             variables, plan = self._collect()
+            sess = self._make_session(self.log, prof)
         except Exception as exc:
             messagebox.showerror("Проверьте данные", str(exc))
             return
 
+        where = self._conn_desc_short()
         if not messagebox.askyesno(
                 "Подтверждение",
-                "Будет отправлено %d команд на %s.\nIP управления: %s\nПродолжить?"
-                % (len(plan), port, variables["mgmt_ip"])):
+                "Будет отправлено %d команд (%s).\nIP управления: %s\nПродолжить?"
+                % (len(plan), where, variables["mgmt_ip"])):
             return
 
         self.progress.set(0)
         self.log("")
         self.log("=== %s | %s ===" % (
             datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
-            self._profile().get("title")))
+            prof.get("title")))
         total = len(plan)
-        baud, prof = self.opt_baud.get(), self._profile()
         login_user, login_pass = variables["login_username"], variables["login_password"]
         operator = self.e_operator.get().strip()
         model_title = prof.get("title", "")
@@ -559,7 +607,6 @@ class App(ctk.CTk):
             self.after(0, lambda i=idx: self.progress.set(i / max(total, 1)))
 
         def job():
-            sess = ss.SerialSession(port, baud, self.log, prof)
             try:
                 result = sess.run_plan(plan, login_user, login_pass, progress,
                                        backup_cmd=backup_cmd, verify_cmd=verify_cmd,
@@ -636,24 +683,30 @@ class App(ctk.CTk):
         m = re.search(r"([0-9A-Fa-f]{2}[-:]){5}[0-9A-Fa-f]{2}", text or "")
         return m.group(0) if m else ""
 
+    def _conn_desc_short(self):
+        if self._conn_mode() == "telnet":
+            return "по сети %s" % self.e_host.get().strip()
+        try:
+            return self._selected_port()
+        except Exception:
+            return "COM"
+
     # ---- Прочитать настройки ----
     def do_read_config(self):
-        try:
-            port = self._selected_port()
-        except Exception as exc:
-            messagebox.showerror("Ошибка", str(exc))
-            return
         prof = self._profile()
         cmd = prof.get("show_running")
         if not cmd:
             messagebox.showinfo("Нет команды", "Для этой модели не задана команда чтения конфига.")
             return
-        baud = self.opt_baud.get()
+        try:
+            sess = self._make_session(self.log, prof)
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+            return
         user, pw = self.e_login_user.get().strip(), self.e_login_pass.get()
         host = self.e_hostname.get().strip() or "switch"
 
         def job():
-            sess = ss.SerialSession(port, baud, self.log, prof)
             try:
                 text = sess.read_config(user, pw, cmd)
                 try:
@@ -668,11 +721,6 @@ class App(ctk.CTk):
 
     # ---- Сброс к заводским ----
     def do_reset(self):
-        try:
-            port = self._selected_port()
-        except Exception as exc:
-            messagebox.showerror("Ошибка", str(exc))
-            return
         prof = self._profile()
         reset_cmds = prof.get("reset")
         if not reset_cmds:
@@ -683,11 +731,14 @@ class App(ctk.CTk):
                 "ВНИМАНИЕ: все настройки коммутатора будут стёрты, устройство перезагрузится.\n"
                 "Продолжить сброс к заводским?"):
             return
-        baud = self.opt_baud.get()
+        try:
+            sess = self._make_session(self.log, prof)
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+            return
         user, pw = self.e_login_user.get().strip(), self.e_login_pass.get()
 
         def job():
-            sess = ss.SerialSession(port, baud, self.log, prof)
             try:
                 sess.reset_factory(user, pw, reset_cmds)
             except Exception as exc:

@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Работа с консольным портом коммутатора через USB-COM."""
+"""Сеанс работы с коммутатором. Транспорт сменный: USB-COM (SerialSession) или
+сеть по Telnet (TelnetSession). Вся логика входа/команд/сброса — общая, в _Session."""
 
 import re
 import time
 
 import serial
 from serial.tools import list_ports
+
+try:
+    import telnetlib            # для сетевого режима (в Python 3.11 присутствует)
+except Exception:               # на будущее: в 3.13 telnetlib удалён
+    telnetlib = None
 
 
 class SwitchError(Exception):
@@ -20,63 +26,61 @@ def list_com_ports():
     return sorted(out)
 
 
-class SerialSession(object):
+# =====================================================================
+#  Базовый класс — вся логика поверх сменного транспорта (_t_*)
+# =====================================================================
+class _Session(object):
 
-    def __init__(self, port, baudrate=115200, log=print, profile=None):
-        self.port_name = port
-        self.baudrate = int(baudrate)
+    def __init__(self, log=print, profile=None):
         self.log = log
         self.profile = profile or {}
-        self.ser = None
         self.prompts = self.profile.get("prompts", ["#", ">"])
         self.error_patterns = self.profile.get("error_patterns", [])
         self.auto_answers = self.profile.get("auto_answers", [])
 
-    # ---------------------------------------------------------------- служебное
+    # ---- транспорт: реализуется в наследниках -------------------------
+    def _conn_desc(self):        raise NotImplementedError
+    def _t_open(self):           raise NotImplementedError
+    def _t_close(self):          raise NotImplementedError
+    def _is_open(self):          raise NotImplementedError
+    def _t_read(self, n):        raise NotImplementedError      # -> bytes (b"" если пусто)
+    def _t_write_bytes(self, b): raise NotImplementedError
+    def _t_reset_input(self):    raise NotImplementedError
+
+    # ---- служебное ----------------------------------------------------
     def open(self):
-        self.log("Открываю %s на %s бод..." % (self.port_name, self.baudrate))
-        self.ser = serial.Serial(
-            port=self.port_name,
-            baudrate=self.baudrate,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=0.2,
-            write_timeout=5,
-        )
-        time.sleep(0.3)
-        self.ser.reset_input_buffer()
+        self.log("Открываю %s..." % self._conn_desc())
+        self._t_open()
 
     def close(self):
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-            self.log("Порт закрыт.")
+        try:
+            if self._is_open():
+                self._t_close()
+                self.log("Соединение закрыто.")
+        except Exception:
+            pass
 
     def _write(self, text):
         # ВАЖНО: отправляем ТОЛЬКО "\r" (CR), без "\n". Консоли D-Link (и многих
-        # других вендоров) трактуют "\r" и "\n" как ДВА отдельных нажатия Enter.
-        # Из-за лишнего "\n" на запрос пароля уходил пустой ввод и логин срывался,
-        # хотя вручную в PuTTY (где шлётся только "\r") тот же admin/admin проходил.
-        self.ser.write((text + "\r").encode("ascii", "ignore"))
-        self.ser.flush()
+        # других) трактуют "\r" и "\n" как ДВА нажатия Enter — из-за лишнего "\n"
+        # на запрос пароля уходил пустой ввод и логин срывался.
+        self._t_write_bytes((text + "\r").encode("ascii", "ignore"))
 
     def _read_until(self, patterns, timeout=8.0):
         """Читает до появления одного из шаблонов или таймаута. Возвращает текст."""
         deadline = time.time() + timeout
         buf = ""
         while time.time() < deadline:
-            chunk = self.ser.read(4096)
+            chunk = self._t_read(4096)
             if chunk:
                 buf += chunk.decode("utf-8", "replace")
                 tail = buf[-200:]
-                # Постраничный вывод (пейджер). У D-Link это строка вида
-                # "SPACE Next Page  ENTER Next Entry  a All  q Quit", у других —
-                # классический "--More--". Отвечаем 'a' (All) — вывалить всё разом,
-                # чтобы длинные show-команды не ломали сессию.
+                # Пейджер: D-Link ("SPACE Next Page  a All  q Quit") или "--More--".
+                # Отвечаем 'a' (All) — вывалить всё разом.
                 if ("Next Page" in tail or "Next Entry" in tail
                         or "--More--" in tail or "More: <space>" in tail
                         or "Quit" in tail):
-                    self.ser.write(b"a")
+                    self._t_write_bytes(b"a")
                     time.sleep(0.05)
                     continue
                 for pat in patterns:
@@ -87,7 +91,6 @@ class SerialSession(object):
         return buf
 
     def _handle_auto_answers(self, text):
-        """Отвечает на подтверждения вида 'Are you sure? (y/n)'."""
         answered = False
         tail = text[-200:]
         for rule in self.auto_answers:
@@ -98,7 +101,6 @@ class SerialSession(object):
                 answered = True
         return answered
 
-    # ------------------------------------------------------------------- сценарий
     def _looks_like_prompt(self, tail):
         low = tail.lower()
         return (any(p in tail for p in self.prompts)
@@ -106,19 +108,15 @@ class SerialSession(object):
                 and "sername" not in low and "ogin:" not in low)
 
     def wake_up(self, username, password, timeout=10):
-        """Будит консоль и логинится, устойчиво к остаточному состоянию строки
-        (например, когда консоль уже показывает UserName:). Возвращает весь
-        собранный текст (баннер + приглашение) — для определения модели.
-
-        ВАЖНО: сначала ЧИТАЕМ, что на экране, и «будим» пустым Enter только при
-        полной тишине — иначе лишний Enter на приглашении UserName: отправлял бы
-        пустой логин и вход срывался."""
+        """Будит консоль и логинится, устойчиво к остаточному состоянию строки.
+        Возвращает весь собранный текст (баннер + приглашение) — для определения
+        модели. Сначала ЧИТАЕМ, что на экране, и «будим» Enter только при тишине."""
         wake = self.prompts + ["ogin:", "sername:", "assword:"]
-        self.ser.reset_input_buffer()
+        self._t_reset_input()
 
         out = self._read_until(wake, timeout=3)
         if not out.strip():
-            self._write("")                       # будильник только при тишине
+            self._write("")
             out = self._read_until(wake, timeout=timeout)
         full = out
         got_any = bool(out.strip())
@@ -144,16 +142,16 @@ class SerialSession(object):
                 self._write(password)
                 sent_pass += 1
             else:
-                self._write("")                   # ничего не распознали — лёгкий повтор
+                self._write("")
             out = self._read_until(wake, timeout=6)
             full += out
 
         if not got_any:
             raise SwitchError(
-                "Коммутатор не отвечает. Проверьте кабель, номер COM-порта и "
-                "скорость (частые значения: 115200, 38400, 9600).")
+                "Коммутатор не отвечает. Проверьте подключение (кабель/порт/скорость "
+                "для COM или IP/сеть для Telnet).")
         if not self._looks_like_prompt(full[-200:]) and not any(p in full[-200:] for p in self.prompts):
-            raise SwitchError("Не удалось войти в CLI. Возможно, неверный логин/пароль или скорость.")
+            raise SwitchError("Не удалось войти в CLI. Возможно, неверный логин/пароль.")
 
         for cmd in self.profile.get("enable", []):
             self._write(cmd)
@@ -167,15 +165,13 @@ class SerialSession(object):
         return full
 
     def identify(self, username, password, profiles):
-        """Определяет марку/модель: логинится, читает баннер и, если нужно, вывод
-        show-команд, сопоставляет с detect-шаблонами профилей.
+        """Определяет марку/модель по баннеру и, если нужно, выводу show-команд.
         Возвращает (ключ_профиля | None, собранный_текст)."""
         self.open()
         try:
             text = self.wake_up(username, password) or ""
             key = self._match_profile(text, profiles)
             if not key:
-                # баннера не хватило — пробуем типовые команды идентификации
                 for cmd in ("show version", "show switch", "show system"):
                     try:
                         text += "\n" + self.capture(cmd, timeout=8)
@@ -198,7 +194,6 @@ class SerialSession(object):
         return None
 
     def send(self, cmd, replies=None, timeout=15, secret=None):
-        """Отправляет команду, ждёт приглашение, возвращает ответ устройства."""
         shown = cmd.replace(secret, "********") if secret else cmd
         self.log("> %s" % shown)
         self._write(cmd)
@@ -217,17 +212,34 @@ class SerialSession(object):
                                   % (shown, out.strip()[-300:]))
         return out
 
-    def capture(self, cmd, timeout=20):
-        """Отправляет show-команду и возвращает ответ коммутатора.
-        Ошибки не выбрасывает (для команд чтения)."""
+    def capture(self, cmd, timeout=60, idle=1.5):
+        """Читает ВЕСЬ вывод show-команды (в т.ч. многостраничный) — завершается по
+        ТИШИНЕ (нет новых данных idle секунд), а не по первому приглашению. Так
+        корректно снимается длинный конфиг старого D-Link (строки '#---' раньше
+        принимались за приглашение). На пейджер отвечаем 'a'."""
         self.log("> %s" % cmd)
         self._write(cmd)
-        return self._read_until(self.prompts, timeout=timeout)
+        buf = ""
+        deadline = time.time() + timeout
+        last = time.time()
+        while time.time() < deadline:
+            chunk = self._t_read(4096)
+            if chunk:
+                buf += chunk.decode("utf-8", "replace")
+                last = time.time()
+                tail = buf[-200:]
+                if ("Next Page" in tail or "Next Entry" in tail
+                        or "--More--" in tail or "Quit" in tail):
+                    self._t_write_bytes(b"a")
+                    time.sleep(0.05)
+            else:
+                if buf and (time.time() - last) > idle:
+                    break
+                time.sleep(0.05)
+        return buf
 
     def run_plan(self, plan, username, password, on_progress=None,
                  backup_cmd=None, verify_cmd=None, facts_cmd=None):
-        """Выполняет план. Опционально: бэкап конфига до, проверка и чтение
-        фактов (версия/MAC) вокруг настройки. Возвращает dict с их выводом."""
         result = {"backup": "", "verify": "", "facts": ""}
         self.open()
         try:
@@ -265,7 +277,6 @@ class SerialSession(object):
         return result
 
     def read_config(self, username, password, cmd):
-        """Логинится и возвращает вывод show-команды (для чтения/бэкапа конфига)."""
         self.open()
         try:
             self.wake_up(username, password)
@@ -274,33 +285,110 @@ class SerialSession(object):
             self.close()
 
     def reset_factory(self, username, password, reset_cmds):
-        """Отправляет команды сброса к заводским, авто-подтверждает и сообщает
-        о перезагрузке (после сброса приглашение уже не ждём)."""
         self.open()
         try:
             self.wake_up(username, password)
             for cmd in (reset_cmds or []):
                 self.log("> %s" % cmd)
                 self._write(cmd)
-                # Ждём ИМЕННО вопрос-подтверждение (не приглашение!), затем
-                # отвечаем "y". Раньше в список ожидания входили приглашения #/>,
-                # и чтение возвращалось раньше, чем появлялся вопрос, — из-за чего
-                # "y" не отправлялся и сброс отменялся.
+                # Ждём ИМЕННО вопрос-подтверждение (не приглашение), затем "y".
                 self._read_until(
                     ["y/n", "y / n", "(y", "yes/no", "proceed", "sure", "confirm",
                      "will be", "continue", "reset"],
                     timeout=12)
-                # Подтверждаем в любом случае, дважды и с Enter — на случай
-                # двойного запроса ("Are you sure" + "Save?"). Лишний "y" на
-                # приглашении безвреден.
-                for _ in range(2):
+                for _ in range(2):          # подтверждаем на случай двойного запроса
                     self._write("y")
                     time.sleep(0.4)
                 self.log("   подтверждение отправлено (y)")
                 time.sleep(0.5)
             self.log("")
             self.log("=== Команда сброса отправлена и подтверждена. Коммутатор "
-                     "перезагружается — вернётся к заводским (пустой конфиг, "
-                     "заводской вход). ===")
+                     "перезагружается — вернётся к заводским. ===")
         finally:
             self.close()
+
+
+# =====================================================================
+#  Транспорт 1: USB-COM
+# =====================================================================
+class SerialSession(_Session):
+
+    def __init__(self, port, baudrate=115200, log=print, profile=None):
+        super(SerialSession, self).__init__(log, profile)
+        self.port_name = port
+        self.baudrate = int(baudrate)
+        self.ser = None
+
+    def _conn_desc(self):
+        return "%s на %s бод" % (self.port_name, self.baudrate)
+
+    def _t_open(self):
+        self.ser = serial.Serial(
+            port=self.port_name, baudrate=self.baudrate,
+            bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE, timeout=0.2, write_timeout=5)
+        time.sleep(0.3)
+        self.ser.reset_input_buffer()
+
+    def _t_close(self):
+        self.ser.close()
+
+    def _is_open(self):
+        return bool(self.ser and self.ser.is_open)
+
+    def _t_read(self, n):
+        return self.ser.read(n)
+
+    def _t_write_bytes(self, data):
+        self.ser.write(data)
+        self.ser.flush()
+
+    def _t_reset_input(self):
+        self.ser.reset_input_buffer()
+
+
+# =====================================================================
+#  Транспорт 2: сеть по Telnet (для коммутаторов без консоли, напр. DGS-1100)
+# =====================================================================
+class TelnetSession(_Session):
+
+    def __init__(self, host, port=23, log=print, profile=None):
+        super(TelnetSession, self).__init__(log, profile)
+        self.host = host
+        self.port = int(port or 23)
+        self.tn = None
+
+    def _conn_desc(self):
+        return "%s:%s (Telnet)" % (self.host, self.port)
+
+    def _t_open(self):
+        if telnetlib is None:
+            raise SwitchError("Telnet недоступен в этой сборке Python.")
+        self.tn = telnetlib.Telnet(self.host, self.port, timeout=8)
+        time.sleep(0.3)
+
+    def _t_close(self):
+        try:
+            self.tn.close()
+        finally:
+            self.tn = None
+
+    def _is_open(self):
+        return self.tn is not None
+
+    def _t_read(self, n):
+        try:
+            return self.tn.read_very_eager()   # неблокирующе; IAC обрабатывается сам
+        except EOFError:
+            return b""
+        except Exception:
+            return b""
+
+    def _t_write_bytes(self, data):
+        self.tn.write(data)                    # telnetlib сам экранирует IAC
+
+    def _t_reset_input(self):
+        try:
+            self.tn.read_very_eager()
+        except Exception:
+            pass

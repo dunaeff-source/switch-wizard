@@ -330,7 +330,10 @@ dlink_legacy:
   # ВАЖНО: "reset config" у старых D-Link СОХРАНЯЕТ IP и учётки (только настройки).
   # Для полного сброса, включая логин/пароль, нужен "reset system" (сам перезагружает).
   reset: ["reset system"]
+  # Бэкап/чтение восстановлены в v1.5: capture() теперь читает по тишине и
+  # корректно снимает длинный конфиг (строки '#---' больше не обрывают чтение).
   show_running: "show config current_config"
+  verify: "show ipif"       # короткая проверка после настройки (покажет IP)
   baudrate: 115200
   prompts: ["#", ">", ":admin#"]
   enable: []
@@ -374,3 +377,76 @@ dlink_legacy:
         - "config vlan vlanid {{vlans_csv}} add tagged {{port_range}}"
     save:
       - "save all"
+
+# =====================================================================
+#  D-Link DGS-1100 — БЕЗ консольного порта, настраивается по СЕТИ (Telnet).
+#  В программе выберите способ подключения «По сети (Telnet)», IP 10.90.90.90.
+#  CLI близок к новому D-Link (configure terminal). ТРЕБУЕТ ОБКАТКИ — команды
+#  ниже проверьте через «Показать команды» и первый прогон, поправим по логам.
+# =====================================================================
+dgs1100:
+  title: "D-Link DGS-1100 (по сети/Telnet)"
+  detect: ["DGS-1100"]
+  baudrate: 115200          # для Telnet не используется, но пусть будет
+  prompts: ["#", ">"]
+  enable: ["enable"]
+  port_prefix: "1/0/"
+  ports_total: 28
+  reset: ["reset system"]                 # ТРЕБУЕТ ОБКАТКИ
+  show_running: "show running-config"
+  verify: "show ip interface brief"
+  error_patterns:
+    - "Invalid input"
+    - "Unrecognized command"
+    - "Ambiguous"
+    - "Incomplete"
+    - "ERROR"
+    - "Conflicted"
+  auto_answers:
+    - match: "\\[y/n\\]"
+      send: "y"
+    - match: "\\(y/n\\)"
+      send: "y"
+    - match: "Destination filename"
+      send: "y"
+  sections:
+    enter_config: ["configure terminal"]
+    hostname: ["snmp-server name {{hostname}}"]
+    vlans:
+      foreach: vlans
+      commands:
+        - "vlan {{vlan_id}}"
+        - "name {{vlan_name}}"
+        - "exit"
+    mgmt:
+      # Как и у DGS-1250: заводской 10.90.90.90/8 занимает всю 10.0.0.0/8 —
+      # сначала снимаем его с VLAN 1, затем ставим наш на управляющий VLAN.
+      - "interface vlan 1"
+      - "no ip address 10.90.90.90 255.0.0.0"
+      - "exit"
+      - "interface vlan {{mgmt_vlan}}"
+      - "ip address {{mgmt_ip}} {{mgmt_mask}}"
+      - "exit"
+      - "ip route 0.0.0.0 0.0.0.0 {{gateway}}"
+    user:
+      - "username {{username}} password {{password}}"
+    snmp:
+      - "snmp-server community {{snmp_ro}} ro"
+    ports_access:
+      foreach: port_groups_access
+      commands:
+        - "interface range ethernet {{iface_range}}"
+        - "switchport mode access"
+        - "switchport access vlan {{vlan}}"
+        - "exit"
+    ports_trunk:
+      foreach: port_groups_trunk
+      commands:
+        - "interface range ethernet {{iface_range}}"
+        - "switchport mode trunk"
+        - "switchport trunk allowed vlan {{vlans_csv}}"
+        - "exit"
+    save:
+      - "end"
+      - cmd: "copy running-config startup-config"
+        timeout: 90
