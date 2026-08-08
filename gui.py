@@ -16,7 +16,7 @@ import customtkinter as ctk
 import config_builder as cb
 import serial_session as ss
 
-APP_VERSION = "1.6"
+APP_VERSION = "1.8"
 APP_TITLE = "UTECH-switch master"
 BAUD_RATES = ["9600", "19200", "38400", "57600", "115200"]
 
@@ -34,7 +34,6 @@ class App(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("%s  v%s" % (APP_TITLE, APP_VERSION))
         self.geometry("1200x780")
         self.minsize(1000, 600)
 
@@ -48,6 +47,11 @@ class App(ctk.CTk):
         except Exception as exc:
             messagebox.showerror("Ошибка", "Не удалось прочитать profiles.yaml:\n%s" % exc)
             raise SystemExit(1)
+
+        # индекс варианта (например «S») читается из profiles.yaml → defaults.variant
+        self.variant = str(self.defaults.get("variant", "")).strip()
+        suffix = (" " + self.variant) if self.variant else ""
+        self.title("%s%s  v%s" % (APP_TITLE, suffix, APP_VERSION))
 
         self.profile_keys = list(self.profiles.keys())
 
@@ -111,7 +115,8 @@ class App(ctk.CTk):
 
     def _build_header(self, parent):
         parent.grid_columnconfigure(2, weight=1)
-        ctk.CTkLabel(parent, text="%s" % APP_TITLE,
+        suffix = ("  " + self.variant) if self.variant else ""
+        ctk.CTkLabel(parent, text="%s%s" % (APP_TITLE, suffix),
                      font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(parent, text="настройка коммутаторов через USB-COM · v%s" % APP_VERSION,
                      font=ctk.CTkFont(size=12), text_color=("gray40", "gray60"))\
@@ -188,12 +193,18 @@ class App(ctk.CTk):
     def _build_params(self, parent, row):
         card = self._card(parent, row, "2.  Параметры коммутатора")
 
-        self.e_hostname = self._entry(card, 1, 0, "Имя устройства:", "SW-OFFICE-01")
-        self.e_ip = self._entry(card, 1, 2, "IP управления:", "10.79.")
-        self.e_mask = self._entry(card, 1, 4, "Маска:", "255.255.255.0")
+        d = self.defaults
+        self.e_hostname = self._entry(card, 1, 0, "Имя устройства:",
+                                      str(d.get("def_hostname", "SW-OFFICE-01")))
+        self.e_ip = self._entry(card, 1, 2, "IP управления:",
+                                str(d.get("def_mgmt_ip", "10.79.")))
+        self.e_mask = self._entry(card, 1, 4, "Маска:",
+                                  str(d.get("def_mgmt_mask", "255.255.255.0")))
 
-        self.e_gw = self._entry(card, 2, 0, "Шлюз (авто):", "")
-        self.e_mgmt_vlan = self._entry(card, 2, 2, "VLAN управления:", "10", width=100)
+        self.e_gw = self._entry(card, 2, 0, "Шлюз (авто):",
+                                str(d.get("def_gateway", "")))
+        self.e_mgmt_vlan = self._entry(card, 2, 2, "VLAN управления:",
+                                       str(d.get("def_mgmt_vlan", "10")), width=100)
         self.e_user = self._entry(card, 2, 4, "Новый логин:", self.defaults["username"])
 
         self.e_pass = self._entry(card, 3, 0, "Новый пароль:", self.defaults["password"], show="*")
@@ -248,9 +259,10 @@ class App(ctk.CTk):
             e.pack()
             return e
 
-        self.e_vname = field(0, "Имя VLAN", 150, "MNGNMT_10")
-        self.e_vid = field(1, "Номер VLAN", 90, "10")
-        self.e_vports = field(2, "Порты", 130, "25-28")
+        d = self.defaults
+        self.e_vname = field(0, "Имя VLAN", 150, str(d.get("def_vlan_name", "MNGNMT_10")))
+        self.e_vid = field(1, "Номер VLAN", 90, str(d.get("def_mgmt_vlan", "10")))
+        self.e_vports = field(2, "Порты", 130, str(d.get("def_uplinks", "25-28")))
 
         mbox = ctk.CTkFrame(form, fg_color="transparent")
         mbox.grid(row=0, column=3, padx=(0, 10), sticky="w")
@@ -338,7 +350,11 @@ class App(ctk.CTk):
     #  VLAN — данные
     # ====================================================================
     def _seed_default_vlan(self):
-        self.vlans = [{"name": "MNGNMT_10", "id": "10", "ports": "25-28", "mode": "tag"}]
+        d = self.defaults
+        self.vlans = [{"name": str(d.get("def_vlan_name", "MNGNMT_10")),
+                       "id": str(d.get("def_mgmt_vlan", "10")),
+                       "ports": str(d.get("def_uplinks", "25-28")),
+                       "mode": "tag"}]
         self._refresh_vlan_list()
 
     def _add_vlan(self):

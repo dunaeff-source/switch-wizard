@@ -5,6 +5,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt pyinstaller
 pyinstaller --noconfirm --onefile --windowed ^
   --name switch-wizard ^
+  --collect-all customtkinter ^
   --hidden-import serial.tools.list_ports ^
   main.py
 copy /Y profiles.yaml dist\profiles.yaml
